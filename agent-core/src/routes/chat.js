@@ -13,7 +13,7 @@ import { maybeSummarize, getRecentSummaries } from '../services/summarizer.js';
 import { maybeExtractPortrait } from '../services/portraitExtractor.js';
 import {
   loadEmotionState, evolveEmotion, evaluateStimulus,
-  stateToPrompt, affinityToPrompt, saveEmotionSnapshot, emotionDashboard,
+  stateToPrompt, affinityToPrompt, affinityToReminder, saveEmotionSnapshot, emotionDashboard,
   loadAffinity, saveAffinity, evolveAffinity, getCompositeEmotion,
 } from '../services/emotionEngine.js';
 import { generateImage, getLastWorkflowMode } from '../services/imageSkill.js';
@@ -84,6 +84,13 @@ const TEMP_STYLE_POOL_OATH = [
   ...TEMP_STYLE_POOL,
   '这次带点撒娇的意味',
   '语气软一点，带点想念',
+];
+// 低好感（<40）专用：风格池与关系深度档位同向，避免中性/亲昵风格把恶劣态度拉回去
+const TEMP_STYLE_POOL_HOSTILE = [
+  '这次带点阴阳怪气的味儿，笑里藏刀',
+  '先冷笑一声，再用敷衍的一句话把 ta 顶回去',
+  '带点瞧不起的语气，把 ta 的话贬一顿再说',
+  '用最短最冲的话回应，一副懒得搭理的样子',
 ];
 
 // ── 回复猜想冷却：每个 conversation 生成一次后进入 20s 冷却，用户新消息到达时重置 ──
@@ -768,10 +775,11 @@ ${coreRules}
       dynamicBlocks.push(`<schedule_context>\n${scheduleCtx}\n</schedule_context>`);
     }
 
-    // 5. 好感度区间描述
+    // 5. 好感度关系深度（档位全文）：换档只在跨越 20/40/60/80/100 边界时发生，变动频率极低，
+    //    按动态块的变动频率排序放前部；末尾另有一行 <attitude_reminder> 重申拿回注意力权重
     if (config.features.emotion && affinity != null) {
       const affinityMsg = affinityToPrompt(affinity);
-      if (affinityMsg) dynamicBlocks.push(affinityMsg);
+      if (affinityMsg) dynamicBlocks.push(`<affinity_attitude>\n${affinityMsg.trim()}\n</affinity_attitude>`);
     }
 
     // 6. 角色视角的用户画像
@@ -820,9 +828,10 @@ ${coreRules}
     }
 
     // 9.5 临时表达风格：小概率注入，紧跟历史聊天之后，只影响本轮回复
-    //     誓约状态时偏向更亲近的风格（俏皮/撒娇），一般时用基础池
+    //     誓约状态时偏向更亲近的风格（俏皮/撒娇），低好感（<40）时用敌意风格池，一般时用基础池
     if (Math.random() < 0.12) {
-      const pool = (userRel && userRel.is_oath) ? TEMP_STYLE_POOL_OATH : TEMP_STYLE_POOL;
+      const pool = (affinity != null && affinity < 40) ? TEMP_STYLE_POOL_HOSTILE
+        : (userRel && userRel.is_oath) ? TEMP_STYLE_POOL_OATH : TEMP_STYLE_POOL;
       const style = pool[Math.floor(Math.random() * pool.length)];
       dynamicBlocks.push(`<style_override>\n${style}。只影响这次回复，不要改变你的性格底色。\n</style_override>`);
     }
@@ -884,10 +893,14 @@ ${coreRules}
       } catch (err) { console.error('[chat] memory search failed:', err.message); }
     }
 
-    // 12. 重逢提示（streak ≥ 2 时注入）
+    // 12. 重逢提示（streak ≥ 2 时注入；低好感时改为冷淡不满版，避免"珍惜感"要求与关系深度档位打架）
     const streak = getUnansweredStreak(characterId);
     if (streak >= 2) {
-      dynamicBlocks.push(`【⚠️ 重逢提示 — 仅本次生成可见，不存入对话记录】${character.display_name} 之前连续发了 ${streak} 条主动消息 ${chatUserName} 都没回——现在 ${chatUserName} 终于回复了。${character.display_name} 应在接下来的回复中自然地流露一点"终于等到你"的情绪——不质问、不委屈、不阴阳怪气。嘴硬的用别扭的方式，温柔的用直接的方式，搞怪的用段子。让 ${chatUserName} 感觉到：ta 回来聊天这件事，对 ${character.display_name} 来说很重要。`);
+      if (affinity != null && affinity < 40) {
+        dynamicBlocks.push(`【⚠️ 重逢提示 — 仅本次生成可见，不存入对话记录】${character.display_name} 之前连续发了 ${streak} 条主动消息 ${chatUserName} 都没回——现在 ${chatUserName} 才回复。结合关系深度档位中你对 ${chatUserName} 的当前态度，不需要流露"终于等到你"的珍惜感——用冷淡、讥讽或不耐烦的方式戳 ta"现在才回消息"这件事，方式符合你的人设即可。`);
+      } else {
+        dynamicBlocks.push(`【⚠️ 重逢提示 — 仅本次生成可见，不存入对话记录】${character.display_name} 之前连续发了 ${streak} 条主动消息 ${chatUserName} 都没回——现在 ${chatUserName} 终于回复了。${character.display_name} 应在接下来的回复中自然地流露一点"终于等到你"的情绪——不质问、不委屈、不阴阳怪气。嘴硬的用别扭的方式，温柔的用直接的方式，搞怪的用段子。让 ${chatUserName} 感觉到：ta 回来聊天这件事，对 ${character.display_name} 来说很重要。`);
+      }
     }
     if (streak > 0) {
       resetUnansweredStreak(characterId);
@@ -929,6 +942,14 @@ ${coreRules}
       } catch (error) {
         console.warn('[chat] town life records unavailable:', error.message);
       }
+    }
+
+    // ── 关系深度一句话重申（固定动态块最末）：档位全文在第 5 位按变动频率排序，
+    //    这行重申（~30 token）借用最末位置的注意力权重，让低好感恶劣态度压过情绪状态、
+    //    临时风格、重逢提示等靠后指令；所在的尾部消息每轮必然重算，不新增缓存负担
+    if (config.features.emotion && affinity != null) {
+      const reminder = affinityToReminder(affinity);
+      if (reminder) dynamicBlocks.push(`<attitude_reminder>你对 ${chatUserName} 的态度以 <affinity_attitude> 为准（当前：${reminder}），优先级高于上方情绪状态、临时风格与重逢氛围。</attitude_reminder>`);
     }
 
     // 生图仍由原有路径 A/B/C/D/E 决策；固定格式规则已在稳定前缀中，不额外改变主回复行为。

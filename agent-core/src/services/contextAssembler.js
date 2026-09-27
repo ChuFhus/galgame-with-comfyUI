@@ -268,6 +268,10 @@ export function estimateTokens(text = '') {
 const BLOCK_PRIORITY = Object.freeze({
   rag_memories: 1,
   memory_recall_result: 1,
+  // 关系深度档位（好感度）：态度基调底线，预算再紧也不裁
+  affinity_attitude: 1,
+  // 关系深度末尾重申：一行但承担低好感态度的注意力权重，同样不裁
+  attitude_reminder: 1,
   time_context: 2,
   active_chat_history: 3,
 });
