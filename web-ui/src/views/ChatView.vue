@@ -61,6 +61,9 @@
               <div class="msg-avatar clickable" title="角色设置" @click="openSettings()">
                 <img v-if="chat.activeChar?.avatar_path" :src="chat.activeChar.avatar_path" class="avatar-img" alt="" />
                 <span v-else class="avatar-fallback">{{ chat.activeChar?.display_name?.charAt(0) }}</span>
+                <span v-if="isCharSleeping" class="sleep-zzz" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="27" height="27" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path class="zzz-1" d="M4 9h4l-4 4h4"/><path class="zzz-2" d="M11 6h5l-5 5h5"/><path class="zzz-3" d="M17 3h5l-5 5h5"/></svg>
+                </span>
               </div>
               <EventShareCard
                 :msg="item.msg"
@@ -78,6 +81,9 @@
               <div class="msg-avatar" :class="{ 'clickable': item.msg.role === 'assistant' }" :title="item.msg.role === 'assistant' ? '角色设置' : ''" @click="item.msg.role === 'assistant' && openSettings()">
                 <img v-if="msgAvatarSrc(item.msg.role)" :src="msgAvatarSrc(item.msg.role)" class="avatar-img" loading="lazy" decoding="async" alt="" />
                 <span v-else class="avatar-fallback">{{ item.msg.role === 'user' ? '我' : chat.activeChar?.display_name?.charAt(0) }}</span>
+                <span v-if="isCharSleeping && item.msg.role === 'assistant'" class="sleep-zzz" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="27" height="27" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path class="zzz-1" d="M4 9h4l-4 4h4"/><path class="zzz-2" d="M11 6h5l-5 5h5"/><path class="zzz-3" d="M17 3h5l-5 5h5"/></svg>
+                </span>
               </div>
               <!-- 等待态：Agent消息内容为空时显示打字动画，不套气泡 -->
               <svg v-if="item.piece.kind === 'text' && item.msg.role === 'assistant' && !item.msg.content && chat.streaming && chat.showTypingDots"
@@ -109,6 +115,9 @@
               <div class="msg-avatar clickable" title="角色设置" @click="openSettings()">
                 <img v-if="chat.activeChar?.avatar_path" :src="chat.activeChar.avatar_path" class="avatar-img" alt="" />
                 <span v-else class="avatar-fallback">{{ chat.activeChar?.display_name?.charAt(0) }}</span>
+                <span v-if="isCharSleeping" class="sleep-zzz" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="27" height="27" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path class="zzz-1" d="M4 9h4l-4 4h4"/><path class="zzz-2" d="M11 6h5l-5 5h5"/><path class="zzz-3" d="M17 3h5l-5 5h5"/></svg>
+                </span>
               </div>
               <ImageGenBubble
                 :msg="item.msg"
@@ -1762,6 +1771,7 @@ function renderContent(text) {
 .thinking-row { margin:2px 0; }
 
 .msg-avatar {
+  position: relative;
   width:42px; height:42px; border-radius:50%; flex-shrink:0;
   display:flex; align-items:center; justify-content:center;
   transition: opacity 0.15s;
@@ -1780,6 +1790,30 @@ function renderContent(text) {
 }
 .msg-same-role .msg-avatar { opacity: 0; pointer-events: none; }
 .avatar-fallback { color:#fff; font-size:14px; font-weight:700; user-select:none; }
+
+/* ── 睡眠 Zzz：三个 Z 从头像右上角逐个冒出（渐入→上飘→渐出） ── */
+.sleep-zzz {
+  position: absolute; top: -11px; right: -12px;
+  width: 27px; height: 27px;
+  pointer-events: none;
+  /* 白色 Z 在浅色头像上也能看清 */
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
+}
+.sleep-zzz svg { display: block; overflow: visible; }
+.sleep-zzz path {
+  opacity: 0;
+  transform-box: fill-box; transform-origin: center;
+  animation: zzz-pop 2.4s ease-in-out infinite;
+}
+.sleep-zzz .zzz-1 { animation-delay: 0s; }
+.sleep-zzz .zzz-2 { animation-delay: 0.8s; }
+.sleep-zzz .zzz-3 { animation-delay: 1.6s; }
+@keyframes zzz-pop {
+  0% { opacity: 0; transform: translate(0, 2px) scale(0.5); }
+  25% { opacity: 1; transform: translate(0, 0) scale(1); }
+  55% { opacity: 1; transform: translate(0, -2px) scale(1); }
+  100% { opacity: 0; transform: translate(0, -5px) scale(1); }
+}
 
 .msg-bubble {
   max-width:75%; padding:10px 14px; border-radius:8px;
@@ -1987,11 +2021,13 @@ function renderContent(text) {
 
 /* ── 叫醒按钮（覆盖送礼按钮样式） ── */
 .wake-btn {
-  background: linear-gradient(135deg, #74b9ff 0%, #0984e3 100%);
-  box-shadow: 0 2px 8px rgba(9, 132, 227, 0.25);
+  background: linear-gradient(135deg, #6ee7a0 0%, #22b573 100%);
+  box-shadow: 0 2px 8px rgba(34, 181, 115, 0.25);
+  /* 待机时每隔几秒抖一下，提示可以摇醒 */
+  animation: wake-nudge 3s ease-in-out infinite;
 }
 .wake-btn:hover {
-  box-shadow: 0 4px 16px rgba(9, 132, 227, 0.35);
+  box-shadow: 0 4px 16px rgba(34, 181, 115, 0.35);
 }
 .wake-shaking {
   animation: wake-shake 0.5s ease-in-out infinite;
@@ -2001,6 +2037,15 @@ function renderContent(text) {
   25% { transform: rotate(-12deg); }
   50% { transform: rotate(12deg); }
   75% { transform: rotate(-8deg); }
+}
+/* 周期待机抖动：3s 一个周期，前 0.55s 抖动、其余时间静止 */
+@keyframes wake-nudge {
+  0%, 19%, 100% { transform: rotate(0deg); }
+  3% { transform: rotate(-14deg) scale(1.08); }
+  6% { transform: rotate(12deg) scale(1.08); }
+  9% { transform: rotate(-9deg) scale(1.08); }
+  13% { transform: rotate(7deg) scale(1.05); }
+  16% { transform: rotate(-3deg) scale(1.02); }
 }
 
 /* ── 发送按钮：圆形 + 渐变 + 发光 + 启停缓动 ── */
