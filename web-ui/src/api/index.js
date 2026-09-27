@@ -501,6 +501,11 @@ export async function updateEventFreq(value) {
   await request(`/config/event-freq`, { method: 'PUT', body: { value } })
 }
 
+/** 更新日程刷新周期（天，1~3） */
+export async function updateScheduleRefreshDays(value) {
+  await request(`/config/schedule-refresh-days`, { method: 'PUT', body: { value } })
+}
+
 /** 更新后台 LLM 并发数 1~10 */
 export async function updateBackgroundConcurrency(value) {
   await request(`/config/background-llm-concurrency`, { method: 'PUT', body: { value } })

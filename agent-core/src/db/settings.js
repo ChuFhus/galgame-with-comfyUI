@@ -86,6 +86,7 @@ export const SETTING_TO_CONFIG = {
   feature_eventFreq:                 { obj: 'features', key: 'eventFreq',          type: 'float' },
   feature_disturbMode:              { obj: 'features', key: 'disturbMode',         type: 'bool' },
   feature_schedule:                 { obj: 'features', key: 'schedule',             type: 'bool' },
+  feature_scheduleRefreshDays:      { obj: 'features', key: 'scheduleRefreshDays',  type: 'int' },
   feature_serializeBackgroundLLM:     { obj: 'features', key: 'serializeBackgroundLLM',    type: 'bool' },
   feature_backgroundLLMMaxConcurrency: { obj: 'features', key: 'backgroundLLMMaxConcurrency', type: 'int' },
   feature_mergeMessages:             { obj: 'features', key: 'mergeMessages',             type: 'bool' },

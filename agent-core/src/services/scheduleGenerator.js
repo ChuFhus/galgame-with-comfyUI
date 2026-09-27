@@ -12,6 +12,7 @@
 
 import { getDb, getWorldSetting, getSystemRules } from '../db/index.js';
 import { chatSync } from '../llm/llm-client.js';
+import { config } from '../config.js';
 import { getLocalDateKey } from '../utils/localDate.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
 
@@ -450,17 +451,19 @@ function timeRangesOverlap(start1, end1, start2, end2) {
 
 /**
  * 为角色设置分散式刷新时间（生成 template 后调用）
- * 分散到明天 00:00~04:00 之间的随机时刻
+ * 按 config.features.scheduleRefreshDays（天）排期：
+ * 第 N 天的 00:00~04:00 之间随机时刻（N=1 即明天凌晨）
  */
 export function assignNextRefreshTime(characterId) {
   const db = getDb();
   const now = new Date();
-  // 明天的 00:00~04:00 之间随机
-  const tomorrow = new Date(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(0, 0, 0, 0);
+  const refreshDays = Math.max(1, Math.min(3, config.features.scheduleRefreshDays || 1));
+  // 第 refreshDays 天的 00:00（refreshDays=1 → 明天 00:00）
+  const target = new Date(now);
+  target.setDate(target.getDate() + refreshDays);
+  target.setHours(0, 0, 0, 0);
   const randomOffset = Math.floor(Math.random() * 4 * 60 * 60 * 1000); // 0~4h in ms
-  const refreshAt = new Date(tomorrow.getTime() + randomOffset);
+  const refreshAt = new Date(target.getTime() + randomOffset);
 
   db.prepare('UPDATE characters SET next_schedule_refresh_at = ? WHERE id = ?')
     .run(refreshAt.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, ''), characterId);

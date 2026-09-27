@@ -106,6 +106,7 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     eventFreq: parseFloat(process.env.EVENT_FREQ) || 1, // 奇遇触发频率 0~1，0=关闭自动触发
     disturbMode: process.env.FEATURE_DISTURB_MODE === 'true', // 默认关：防打扰模式
     schedule: process.env.FEATURE_SCHEDULE !== 'false', // 默认开：日程系统
+    scheduleRefreshDays: Math.max(1, Math.min(3, parseInt(process.env.SCHEDULE_REFRESH_DAYS, 10) || 1)), // 日程刷新周期（天），1~3
     serializeBackgroundLLM: process.env.FEATURE_SERIALIZE_BG_LLM === 'true', // 默认关：后台LLM任务串行化
     backgroundLLMMaxConcurrency: parseInt(process.env.BG_LLM_MAX_CONCURRENCY, 10) || 3, // 后台最大并发数 (1-10)
     mergeMessages: process.env.FEATURE_MERGE_MESSAGES === 'true', // 默认关：合并连续同角色消息兼容Jinja模板
@@ -463,6 +464,17 @@ export function updateEventFreq(value) {
   config.features.eventFreq = f;
   persistSettingSync('feature_eventFreq', String(f));
   console.log(`[config] eventFreq = ${f}`);
+}
+
+/**
+ * 更新日程刷新周期（天，1~3），影响下次排期的 next_schedule_refresh_at
+ */
+export function updateScheduleRefreshDays(value) {
+  const n = Math.max(1, Math.min(3, parseInt(value, 10) || 1));
+  config.features.scheduleRefreshDays = n;
+  persistSettingSync('feature_scheduleRefreshDays', String(n));
+  console.log(`[config] scheduleRefreshDays = ${n}`);
+  return n;
 }
 
 /**

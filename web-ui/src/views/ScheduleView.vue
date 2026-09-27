@@ -16,6 +16,16 @@
                   @keydown.esc="searchQuery = ''"
                 />
                 <div
+                  class="lib-gear"
+                  role="button"
+                  tabindex="0"
+                  title="日程设置"
+                  aria-label="日程设置"
+                  @click="openSettings"
+                  @keydown.enter.prevent="openSettings"
+                  @keydown.space.prevent="openSettings"
+                ><gear-icon :size="18" /></div>
+                <div
                   class="btn-reset"
                   :class="{ 'is-resetting': store.resetTask?.processing, 'is-disabled': store.resetTask?.processing && !store.resetTask?.backgrounded }"
                   role="button"
@@ -110,6 +120,26 @@
       @wakeDoor="onWakeDoor"
       @updated="detailActs = $event"
     />
+
+    <!-- ═══ 日程设置弹窗 ═══ -->
+    <linshe-modal v-model="settingsOpen" title="日程设置">
+      <div class="sched-settings-body">
+        <div class="sched-settings-slider-heading">
+          <label for="schedule-refresh-days">日程刷新周期</label>
+          <span class="sched-settings-value">每 {{ refreshDays }} 天刷新一次</span>
+        </div>
+        <linshe-slider
+          id="schedule-refresh-days"
+          v-model="refreshDays"
+          :min="1" :max="3" :step="1"
+          aria-label="日程刷新周期"
+        />
+        <p class="sched-settings-hint">每隔 {{ refreshDays }} 天自动为所有角色重新编排日程，更改在下次刷新时生效。</p>
+      </div>
+      <template #footer>
+        <linshe-button variant="primary" :disabled="savingRefreshDays" :loading="savingRefreshDays" @click="onConfirmSettings">确定</linshe-button>
+      </template>
+    </linshe-modal>
 
     <!-- ═══ 瞄一眼快照弹窗（胶卷边框风格） ═══ -->
     <Teleport to="body">
@@ -349,8 +379,11 @@ import * as api from '../api/index.js'
 import CharacterStatusCard from '../components/CharacterStatusCard.vue'
 import CharacterDetailDrawer from '../components/CharacterDetailDrawer.vue'
 import ImageLightbox from '../components/ImageLightbox.vue'
+import GearIcon from '../components/GearIcon.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
 import LinsheInput from '../components/ui/LinsheInput.vue'
+import LinsheModal from '../components/ui/LinsheModal.vue'
+import LinsheSlider from '../components/ui/LinsheSlider.vue'
 
 const store = useScheduleStore()
 const settingsStore = useSettingsStore()
@@ -370,6 +403,35 @@ const searchQuery = ref('')
 const headerVisible = ref(true)
 let lastScrollTop = 0
 const cardGridEl = ref<HTMLElement | null>(null)
+
+// ── 日程设置（刷新周期） ──
+const settingsOpen = ref(false)
+const refreshDays = ref(1)
+const savingRefreshDays = ref(false)
+
+async function openSettings() {
+  try {
+    const cfg = await api.getConfig()
+    refreshDays.value = Math.max(1, Math.min(3, cfg?.features?.scheduleRefreshDays ?? 1))
+  } catch {
+    // 读取失败时沿用本地值打开弹窗
+  }
+  settingsOpen.value = true
+}
+
+async function onConfirmSettings() {
+  if (savingRefreshDays.value) return
+  savingRefreshDays.value = true
+  try {
+    await api.updateScheduleRefreshDays(refreshDays.value)
+    toastFn(`日程刷新周期已设为每 ${refreshDays.value} 天一次`, 'success')
+    settingsOpen.value = false
+  } catch (err: any) {
+    toastFn('保存失败: ' + (err.message || '未知错误'), 'error')
+  } finally {
+    savingRefreshDays.value = false
+  }
+}
 
 function onScroll() {
   const el = cardGridEl.value
@@ -1147,6 +1209,24 @@ function finishReset() {
   width: 140px; padding: 7px 12px;
 }
 
+/* 设置齿轮 — 与奇遇页 lib-gear 同款 */
+.lib-gear {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 2px solid transparent;
+  background: rgba(var(--accent-rgb), 0.08);
+  color: var(--accent);
+  font-size: 18px; line-height: 1;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex; align-items: center; justify-content: center;
+  user-select: none;
+}
+.lib-gear:hover {
+  border-color: rgba(var(--accent-rgb), 0.55);
+  box-shadow: 0 3px 20px rgba(var(--accent-rgb), 0.10);
+  transform: rotate(30deg);
+}
+
 /* 重置世界线按钮 — 和朋友圈 btn-post 同款 */
 .btn-reset {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1180,6 +1260,18 @@ function finishReset() {
   color: var(--accent);
 }
 .btn-reset .spinning { animation: spin 1.2s linear infinite; }
+
+/* ── 日程设置弹窗 ── */
+.sched-settings-body {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 4px 2px;
+}
+.sched-settings-slider-heading {
+  display: flex; align-items: baseline; justify-content: space-between;
+}
+.sched-settings-slider-heading label { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
+.sched-settings-value { font-size: 0.85rem; font-weight: 600; color: var(--accent); }
+.sched-settings-hint { margin: 6px 0 0; font-size: 0.8rem; line-height: 1.5; color: var(--text-secondary); }
 
 
 /* ── Card Grid ── */
