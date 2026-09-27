@@ -122,8 +122,9 @@ function resetBg() { saveBg('') }
 }
 .cbp-default-hint, .cbp-custom-hint {
   font-size: 11.5px;
-  color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-bright);
+  background: var(--popover-bg);
+  border: 1px solid var(--glass-border);
   padding: 3px 10px;
   border-radius: 20px;
   backdrop-filter: blur(6px);

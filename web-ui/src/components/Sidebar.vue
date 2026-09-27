@@ -470,7 +470,7 @@ function formatTime(iso) {
   flex: 1; overflow-y: auto;
   padding-top: 10px;
   scrollbar-width: none;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--tint-faint);
 }
 
 .char-list::-webkit-scrollbar {
@@ -485,7 +485,7 @@ function formatTime(iso) {
   background: transparent;
   position: relative;
 }
-.char-item:hover { background: rgba(255, 255, 255, 0.22); }
+.char-item:hover { background: var(--tint-subtle); }
 .char-item.active {
   background: var(--list-item-active-bg);
   box-shadow: 0 2px 14px rgba(0, 0, 0, 0.04);
@@ -498,8 +498,8 @@ function formatTime(iso) {
 
 .char-avatar {
   width: 44px; height: 44px; border-radius: 50%;
-  background: #e07b6c;
-  color: white;
+  background: var(--accent);
+  color: var(--on-accent);
   display: flex; align-items: center; justify-content: center;
   font-size: 18px; font-weight: 600; flex-shrink: 0;
 }
@@ -610,7 +610,7 @@ function formatTime(iso) {
 .group-avatar-grid {
   width: 44px; height: 44px; border-radius: 12px; overflow: hidden;
   display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
-  background: rgba(255,255,255,0.5);
+  background: var(--bg-tertiary);
 }
 /* 自定义群头像：整块一张图 */
 .group-avatar-grid.group-avatar-single { grid-template-columns: 1fr; gap: 0; }
@@ -680,7 +680,7 @@ function formatTime(iso) {
   overflow: hidden;
   border-radius: 18px;
   border: 1px solid rgba(var(--accent-rgb), 0.16);
-  background: #fff;
+  background: var(--bg-secondary);
   box-shadow: 0 20px 60px rgba(54, 42, 38, 0.2), 0 2px 8px rgba(var(--accent-rgb), 0.08);
 }
 .cg-dialog-header {
@@ -690,7 +690,6 @@ function formatTime(iso) {
   gap: 24px;
   padding: 20px 28px;
   border-bottom: 1px solid rgba(var(--accent-rgb), 0.12);
-  background: #fff;
 }
 .cg-dialog-title {
   margin: 0;
@@ -707,7 +706,6 @@ function formatTime(iso) {
   gap: 28px;
   min-height: 0;
   padding: 24px 28px;
-  background: #fff;
 }
 .cg-form-col,
 .cg-member-col {
@@ -749,7 +747,7 @@ function formatTime(iso) {
 .cg-member-desktop {
   min-height: 88px;
   padding: 9px 6px 8px;
-  background: #fff;
+  background: var(--bg-secondary);
   border-width: 1px;
   border-color: var(--border);
 }
@@ -775,7 +773,6 @@ function formatTime(iso) {
   gap: 16px;
   padding: 18px 28px 22px;
   border-top: 1px solid rgba(var(--accent-rgb), 0.12);
-  background: #fff;
 }
 .cg-hint {
   font-size: 12px;
@@ -813,7 +810,7 @@ function formatTime(iso) {
 /* ── 移动端底部 ── */
 .sidebar-footer {
   padding: 12px 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  border-top: 1px solid var(--glass-border);
   display: flex;
   gap: 10px;
   align-items: center;
@@ -826,13 +823,13 @@ function formatTime(iso) {
   font-size: 13px; font-weight: 500;
   color: var(--text-secondary);
   text-decoration: none;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--glass-bg-strong);
   transition: all 0.2s ease;
   position: relative;
   cursor: pointer;
 }
 .footer-nav-btn:hover, .footer-nav-btn.active {
-  background: rgba(255, 255, 255, 0.35);
+  background: var(--bg-hover);
   color: var(--text-bright);
   text-decoration: none;
 }
@@ -843,13 +840,13 @@ function formatTime(iso) {
   padding: 12px 0;
   border-radius: 12px;
   border: none;
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--glass-bg-strong);
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s ease;
   user-select: none;
 }
-.footer-more-btn:hover { background: rgba(255, 255, 255, 0.35); color: var(--text-bright); }
+.footer-more-btn:hover { background: var(--bg-hover); color: var(--text-bright); }
 
 .nav-icon-wrap {
   position: relative;
@@ -892,7 +889,7 @@ function formatTime(iso) {
 .more-menu-panel {
   width: 100%;
   padding: 16px 16px 24px;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--popover-bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-radius: 20px 20px 0 0;
@@ -905,7 +902,7 @@ function formatTime(iso) {
   text-decoration: none;
   transition: background 0.15s;
 }
-.more-menu-item:hover { background: rgba(0, 0, 0, 0.05); }
+.more-menu-item:hover { background: var(--tint-subtle); }
 .more-menu-item svg { flex-shrink: 0; }
 
 /* 弹窗动画 */
@@ -940,7 +937,7 @@ function formatTime(iso) {
     /* 移动端取消毛玻璃，纯色背景减轻 GPU 负担 */
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
-    background: rgba(255, 255, 255, 0.92);
+    background: var(--bg-primary);
   }
   /* 打开态：滑入屏幕 */
   .sidebar.mobile-open {

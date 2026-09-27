@@ -1095,7 +1095,7 @@ async function clearGroupAvatar() {
 .group-avatar-grid {
   width: 42px; height: 42px; border-radius: 10px; overflow: hidden;
   display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
-  background: rgba(255,255,255,0.5);
+  background: var(--bg-tertiary);
 }
 .group-avatar-cell {
   background-size: cover; background-position: center;
@@ -1127,7 +1127,7 @@ async function clearGroupAvatar() {
   min-height:44px; padding:0 14px 0 16px;
   display:flex; align-items:center; justify-content:center; gap:6px;
   border:1px solid rgba(var(--accent-rgb),0.34); border-radius:22px;
-  background:rgba(255,255,255,0.96); color:var(--accent);
+  background:var(--popover-bg); color:var(--accent);
   box-shadow:0 6px 22px rgba(92,55,45,0.16);
   font-size:13px; font-weight:600; cursor:pointer;
   backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
@@ -1164,14 +1164,14 @@ async function clearGroupAvatar() {
 /* ── 点头像弹出的成员操作小窗 ── */
 .avatar-pop-layer {
   position: fixed; inset: 0; z-index: 1200;
-  background: rgba(28, 20, 16, 0.14);
+  background: rgba(0, 0, 0, 0.35);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
 }
 .avatar-pop-card {
   position: fixed; width: 320px; max-width: calc(100vw - 24px); min-height: 150px;
-  background: rgba(255, 255, 255, 0.97);
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: var(--popover-bg);
+  border: 1px solid var(--glass-border);
   border-radius: 16px;
   box-shadow: 0 14px 42px rgba(60, 34, 25, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.04);
   padding: 14px;
@@ -1194,7 +1194,7 @@ async function clearGroupAvatar() {
   min-height: 42px; padding: 8px 4px;
   display: flex; align-items: center; justify-content: center; gap: 5px;
   border: 1px solid rgba(var(--accent-rgb), 0.26); border-radius: 12px;
-  background: #fff; color: var(--text-primary);
+  background: var(--bg-secondary); color: var(--text-primary);
   font-size: 12px; font-weight: 600; cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.15s ease;
   user-select: none;
@@ -1311,7 +1311,7 @@ async function clearGroupAvatar() {
 /* @点名面板 */
 .mention-panel {
   position: absolute; bottom: calc(100% + 4px); left: 24px;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--popover-bg);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--glass-border);
@@ -1329,7 +1329,7 @@ async function clearGroupAvatar() {
   padding: 8px 14px 8px 8px; border-radius: 10px;
   font-size: 14px; color: var(--text-primary); cursor: pointer;
 }
-.mention-item:hover { background: rgba(0,0,0,0.05); }
+.mention-item:hover { background: var(--tint-subtle); }
 .mention-item.is-active { background: rgba(var(--accent-rgb), 0.16); }
 .mention-item-hint {
   margin-left: auto; padding-left: 10px;
@@ -1350,7 +1350,7 @@ async function clearGroupAvatar() {
 }
 .gc-drawer {
   width: min(480px, 94vw); height: 100%;
-  background: rgba(255,255,255,0.97);
+  background: var(--bg-secondary);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   padding: 24px 20px;
@@ -1375,7 +1375,7 @@ async function clearGroupAvatar() {
 .gc-member-check {
   min-width: 0; min-height: 92px; padding: 9px 5px 8px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
-  border: 1px solid var(--border); border-radius: 12px; background: #fff; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--bg-secondary); cursor: pointer;
   font-size: 12px; color: var(--text-primary); transition: all 0.15s ease;
   user-select: none;
 }
