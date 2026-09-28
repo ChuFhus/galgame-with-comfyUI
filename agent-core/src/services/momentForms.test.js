@@ -8,7 +8,7 @@ import {
 
 test('motive directive states the selected subject without restating system rules', () => {
   const directive = buildMomentMotiveDirective('发现一个很喜欢的小东西');
-  assert.match(directive, /【本次发圈动因】发现一个很喜欢的小东西/);
+  assert.match(directive, /【本次发朋友圈动因】发现一个很喜欢的小东西/);
   assert.doesNotMatch(directive, /同等重要/);
   assert.equal(buildMomentMotiveDirective(' '), '');
 });

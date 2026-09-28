@@ -597,7 +597,7 @@ async function generateMomentPost(character, opts = {}) {
   // 1. 一维/二维组合选取，代码侧硬随机避免 LLM 偏见
 
   const SPECIAL_MODES = [
-    { name: '做梦/幻想', desc: '分享怪梦或白日梦——内容完全自由，不受现实逻辑约束。可以描述梦境场景、超现实体验、天马行空的脑洞。配图是超现实或梦幻风格' },
+    { name: '做梦/幻想', desc: '候选动因：分享怪梦或白日梦。仅在非常契合当前日程或未提供日程时采用；采用后可描述梦境场景、超现实体验或脑洞，配图可用超现实或梦幻风格' },
   ];
 
   // 5% 特殊叙事模式 / 10% 完全自由发挥 / 85% Topic 模式
@@ -607,29 +607,38 @@ async function generateMomentPost(character, opts = {}) {
   let isSpecialMode = false;
   let isFreeMode = false;
 
-  const modeRoll = Math.random();
-  if (modeRoll < 0.05) {
-    pickedSpecialMode = SPECIAL_MODES[Math.floor(Math.random() * SPECIAL_MODES.length)];
-    combinedStyle = pickedSpecialMode.name;
-    isSpecialMode = true;
-  } else if (modeRoll < 0.15) {
-    isFreeMode = true;
+  // 报纸吐槽帖：调度器传入 forcedTopic 时跳过掷骰，动因直接用强制话题（《邻舍日报》当期特稿）
+  if (opts.forcedTopic?.desc) {
+    pickedTopic = {
+      name: String(opts.forcedTopic.name || '今日话题'),
+      desc: String(opts.forcedTopic.desc),
+    };
+    combinedStyle = pickedTopic.name;
   } else {
-    // 话题库存于 moment_topics 表（用户可在「朋友圈话题库」弹窗中管理），代码侧硬随机避免 LLM 偏见
-    const topics = db.prepare(`SELECT name, desc FROM moment_topics WHERE is_active = 1`).all();
-    if (topics.length === 0) {
-      isFreeMode = true; // 库被清空时兜底自由发挥
+    const modeRoll = Math.random();
+    if (modeRoll < 0.05) {
+      pickedSpecialMode = SPECIAL_MODES[Math.floor(Math.random() * SPECIAL_MODES.length)];
+      combinedStyle = pickedSpecialMode.name;
+      isSpecialMode = true;
+    } else if (modeRoll < 0.15) {
+      isFreeMode = true;
     } else {
-      pickedTopic = topics[Math.floor(Math.random() * topics.length)];
-      combinedStyle = pickedTopic.name;
+      // 话题库存于 moment_topics 表（用户可在「朋友圈话题库」弹窗中管理），代码侧硬随机避免 LLM 偏见
+      const topics = db.prepare(`SELECT name, desc FROM moment_topics WHERE is_active = 1`).all();
+      if (topics.length === 0) {
+        isFreeMode = true; // 库被清空时兜底自由发挥
+      } else {
+        pickedTopic = topics[Math.floor(Math.random() * topics.length)];
+        combinedStyle = pickedTopic.name;
+      }
     }
   }
 
-  // 1.5 发布形态抽取：做梦/幻想 → 叙事长文（讲故事需要空间）；
+  // 1.5 发布形态抽取：做梦/幻想 → 采纳动因时可写长文，否则回到日程短句；
   //     其余（自由模式与主路径）→ 按时段加权抽取（深夜偏爱纯图党/自言自语，模拟真人深夜状态）
   let pickedForm = null;
   if (isSpecialMode) {
-    pickedForm = { name: '叙事长文', desc: '像在讲一个故事或一场梦，可以自由展开', len: '80-200字' };
+    pickedForm = { name: '叙事长文', desc: '仅在采用梦境或幻想动因时可展开叙事长文；否则围绕当前日程随手写一两个短句，不凑长文', len: '梦境叙事80-200字，否则按日程写短句' };
   } else {
     const _hour = new Date().getHours();
     const _isNight = _hour >= 22 || _hour < 5;
@@ -759,7 +768,7 @@ async function generateMomentPost(character, opts = {}) {
 
   const postingTask = (() => {
     const textShape = isSpecialMode
-      ? '中文口语，第一人称，讲完一场梦或幻想'
+      ? '中文口语，第一人称，优先围绕当前日程；仅在梦境或幻想动因符合采纳条件时讲一场梦或幻想'
       : '中文口语，只围绕一个具体中心，留下角色的反应';
     const jsonFmt = buildMomentOutputFormat({ imageCount, textRequirement: textShape });
 
@@ -777,7 +786,7 @@ ${worldSetting ? '- **世界观驱动**：你的朋友圈发生在<world_setting
     const dynamicRules = `- text用中文（参考 ${pickedForm ? pickedForm.len : '30-80字'}，不凑字数），imagePrompt 用英文
 ${multiImageRule}
 ${pickedForm ? `- **发布形态**：${pickedForm.desc}。` : ''}
-${isSpecialMode ? '- **梦境例外**：可展开长文；日程与天气只约束现实，不必另叙现实活动。正文分清梦与现实，配图只取梦内同一场景。' : ''}
+${isSpecialMode ? '- **梦境采纳条件**：有当前日程时，做梦/幻想动因也必须非常契合日程才可采用；否则完全忽略梦境及其配图建议，图文正常记录当前日程。未提供日程时可采用。采用后正文分清梦与现实，配图只取梦内同一场景，不得借梦境绕开日程。' : ''}
 ${imperfectionNote}
 ${isOath ? '- 已缔结誓约：银白细戒指只能出现在 imagePrompt 的画面描述中，text 禁止提及戒指、誓约及其象征意义。' : ''}
 ${continuationNote}
@@ -800,7 +809,7 @@ ${dynamicRules}`;
 
   const timeTag = getTimeTag(now, false);
 
-  // 日程注入：当前正在做什么；与发圈动因共同合成一条主线
+  // 日程注入：图文主线以当前日程为准，发圈动因仅在非常契合时弱影响表达
   let scheduleContext = '';
   let scheduleWithUser = false; // 日程提到了用户（如聊天约定改写的日程）→ 本条朋友圈带上用户
   try {
@@ -870,7 +879,7 @@ ${userName}的信息：${userDesc || '信息未知，按普通人处理'}
   let imagePrompts = [];
   try {
   // 小镇生活上下文（读模型分发时的最新记录，不跨排队缓存）
-  // Dream/fantasy and free expression retain their original narrative freedom.
+  // 梦境候选与自由模式不额外注入生活记录；已注入的当前日程仍按上方优先级处理。
   if (config.features.town === true && !isFreeMode && !isSpecialMode) {
     try {
       const lifeContext = createCharacterTownLifeContext({ db, clock: { now: Date.now },
@@ -1062,7 +1071,7 @@ ${weatherHint}`;
   const descPart = activity.description ? `（${activity.description}）` : '';
   const userMsg = `${timeTag}
 **【此刻正在做】${character.display_name}此刻正在${doing}${descPart}**
-**【本次发圈动因】这是你与${userName}约好的事情——就是上面【此刻正在做】的内容，只围绕它发一条朋友圈。**`;
+**【本次发朋友圈动因】这是你与${userName}约好的事情——就是上面【此刻正在做】的内容，只围绕它发一条朋友圈。**`;
 
   const msgs = [{ role: 'system', content: permissionPrompt }];
   if (worldIntegrationNote) msgs.push({ role: 'system', content: worldIntegrationNote });

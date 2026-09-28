@@ -24,6 +24,7 @@ import { broadcast } from './unifiedStreamBus.js';
 import { getFreshUnsharedDream, markDreamShared } from './dreamService.js';
 import { createCharacterTownLifeContext } from './characterTownLifeContext.js';
 import { createTownActorRegistry } from './town/townActorRegistry.js';
+import { maybeGenerateDailyNewspaper } from './newspaperService.js';
 
 const CHECK_INTERVAL = 1 * 60 * 1000; // 1 分钟
 
@@ -60,6 +61,10 @@ async function tick() {
   processing = true;
 
   try {
+    // 0. 每日预告报纸《邻舍日报》：每天零点起补当天份（内部自带去重/节流/错误兜底，
+    //    fire-and-forget——生成含 LLM 与逐张配图，不能阻塞下面的调度）
+    maybeGenerateDailyNewspaper();
+
     // 1. 日程分散刷新（每次 tick 最多 1 个角色）
     await maybeRefreshOneSchedule();
 

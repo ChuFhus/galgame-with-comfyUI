@@ -1754,10 +1754,7 @@ function finishReset() {
 </style>
 
 <style>
-/* lightbox 必须在 peek-overlay (z-index:1100) 之上 */
-.vel-modal, .vel-img-wrapper, .vel-img {
-  z-index: 1300 !important;
-}
+/* lightbox 层级已由 ImageLightbox.vue 统一接管（--vel-z-index，默认 9998 高于 peek-overlay 1100） */
 
 /* ── 瞄一眼图片悬浮 description 提示框（z-index 高于 peek-overlay 1100）── */
 .lightbox-tooltip {

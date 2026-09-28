@@ -584,4 +584,14 @@ async function onDelete() {
   transform-origin: center;
 }
 @keyframes vel-del-spin { to { transform: rotate(360deg); } }
+
+/* ── 层级接管 ──
+   当前 vel 版本不消费 zIndex prop（css 默认 9998），层级完全由 CSS 决定；
+   这里统一由 --vel-z-index 提供并 !important 兜底（默认 9998：高于普通页面浮层，
+   低于 LinsheModal 的 10000；需要盖住弹窗的场景在外层传 --vel-z-index 覆盖，
+   如 NewspaperModal 用 11000）。EventCard / ScheduleView 里的同名 !important
+   页面级覆盖已删除，由本规则统一接管。 */
+.vel-modal {
+  z-index: var(--vel-z-index, 9998) !important;
+}
 </style>

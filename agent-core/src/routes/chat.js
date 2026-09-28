@@ -20,6 +20,7 @@ import { generateImage, getLastWorkflowMode } from '../services/imageSkill.js';
 import { charArtistOverride } from '../services/characterImageOpts.js';
 import { buildCharacterPersona, buildImageCrossRefInfo, buildUserImageCrossRefInfo } from '../services/characterPersona.js';
 import { getActiveBuffBlock } from '../services/itemService.js';
+import { getWorldStateBlock, getCharacterEventBlockFor } from '../services/newspaperService.js';
 import { RAG_TIMEOUT_FAST_MS } from '../services/imagePromptKnowledge.js';
 import { appendOathRing } from '../services/oathUtils.js';
 import { getEventVadModifier } from '../services/eventGenerator.js';
@@ -638,6 +639,9 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
     let charBaseContent = character?.base_prompt || getDefaultPrompt();
     const buffBlock = getActiveBuffBlock(characterId);
     if (buffBlock) charBaseContent = `${charBaseContent}\n\n${buffBlock}`;
+    // 小镇世界状态（当日《邻舍日报》15% 概率产出）：影响全镇所有人，注入位与道具 buff 同位
+    const worldStateBlock = getWorldStateBlock();
+    if (worldStateBlock) charBaseContent = `${charBaseContent}\n\n${worldStateBlock}`;
 
     // ── 稳定块 [2]：用户上下文 + 关系 + 固定格式规则 ──
     const chatUserName = config.user.nickname || '用户';
@@ -937,11 +941,17 @@ ${coreRules}
     dynamicBlocks.push(buildCharacterTownSceneBlock(req.townAdmission));
     if (config.features.town) {
       try {
-        dynamicBlocks.push(createCharacterTownLifeContext({ db, clock: { now: Date.now }, timeZone: config.town.timeZone,
+        dynamicBlocks.push(createCharacterTownLifeContext({ db, clock: { now: Date.now() }, timeZone: config.town.timeZone,
           registry: createTownActorRegistry(db) })(character.id));
       } catch (error) {
         console.warn('[chat] town life records unavailable:', error.message);
       }
+    }
+
+    // 当日《邻舍日报》人物特稿：仅当天主角的私聊注入，预告ta今天将要经历的事
+    const newspaperEventBlock = getCharacterEventBlockFor(characterId);
+    if (newspaperEventBlock) {
+      dynamicBlocks.push(newspaperEventBlock);
     }
 
     // ── 关系深度一句话重申（固定动态块最末）：档位全文在第 5 位按变动频率排序，

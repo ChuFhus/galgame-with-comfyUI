@@ -29,6 +29,7 @@ import mailboxRoutes from './src/routes/mailbox.js';
 import groupsRoutes from './src/routes/groups.js';
 import libraryRoutes from './src/routes/library.js';
 import itemsRoutes from './src/routes/items.js';
+import newspaperRoutes from './src/routes/newspaper.js';
 import townRoutes from './src/routes/town.js';
 import maibotBridgeRoutes from './src/maibot-bridge/router.js';
 import { autoRestoreMissing } from './src/services/workflowTemplates.js';
@@ -129,6 +130,7 @@ app.use('/api/mailbox', wrapRouterAsync(mailboxRoutes));
 app.use('/api/groups', wrapRouterAsync(groupsRoutes));
 app.use('/api/library', wrapRouterAsync(libraryRoutes));   // /api/library/event-types, /api/library/topics
 app.use('/api/items', wrapRouterAsync(itemsRoutes));
+app.use('/api/newspaper', wrapRouterAsync(newspaperRoutes));   // /api/newspaper/today 《小镇早知道》
 app.use('/api/town', wrapRouterAsync(townRoutes));
 
 app.use('/api/maibot', wrapRouterAsync(maibotBridgeRoutes));

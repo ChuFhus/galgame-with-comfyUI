@@ -109,20 +109,36 @@
     </div>
 
     <!-- ═══════════════════════════════════════════
-         用户关系图入口卡片
+         今日报纸 / 用户关系图入口卡片（同一行，各占一半）
          ═══════════════════════════════════════════ -->
-    <div class="relation-entry card" @click="showUserRelationGraph = true">
-      <div class="relation-entry-icon">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
-          <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
-        </svg>
+    <div class="relation-entry-row">
+      <div class="relation-entry card" @click="openNewspaper">
+        <div class="relation-entry-icon newspaper-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 22h14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2Zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/>
+            <path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8V6Z"/>
+          </svg>
+        </div>
+        <div class="relation-entry-text">
+          <span class="relation-entry-title">邻舍日报<span v-if="newspaperUnread" class="newspaper-dot cel-jelly" title="今天的报纸还没读"></span></span>
+          <span class="relation-entry-hint">{{ newspaperHint }}</span>
+        </div>
+        <span class="relation-entry-arrow">›</span>
       </div>
-      <div class="relation-entry-text">
-        <span class="relation-entry-title">我的关系图</span>
-        <span class="relation-entry-hint">查看和管理你与所有角色的关系</span>
+
+      <div class="relation-entry card" @click="showUserRelationGraph = true">
+        <div class="relation-entry-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="17" r="3"/>
+            <line x1="9" y1="6" x2="11" y2="14"/><line x1="15" y1="6" x2="13" y2="14"/>
+          </svg>
+        </div>
+        <div class="relation-entry-text">
+          <span class="relation-entry-title">我的关系图</span>
+          <span class="relation-entry-hint">查看和管理你与所有角色的关系</span>
+        </div>
+        <span class="relation-entry-arrow">›</span>
       </div>
-      <span class="relation-entry-arrow">›</span>
     </div>
 
     <!-- ═══════════════════════════════════════════
@@ -586,6 +602,11 @@
          ═══════════════════════════════════════════ -->
     <BackpackModal :visible="showBackpack" :characters="sortedCharacters" @close="showBackpack = false" />
 
+    <!-- ═══════════════════════════════════════════
+         《邻舍日报》报纸阅读窗
+         ═══════════════════════════════════════════ -->
+    <NewspaperModal v-model="showNewspaper" @read="onNewspaperRead" />
+
       <EmojiManagerModal v-if="showEmojiManager" :characters="sortedCharacters" @close="showEmojiManager = false" />
   </div>
 </template>
@@ -603,6 +624,7 @@ import RelationshipDeductionModal from '../components/RelationshipDeductionModal
 import CharacterDetailModal from '../components/CharacterDetailModal.vue'
 import MailboxModal from '../components/MailboxModal.vue'
 import BackpackModal from '../components/BackpackModal.vue'
+import NewspaperModal from '../components/NewspaperModal.vue'
 import EmojiManagerModal from '../components/EmojiManagerModal.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
 import LinsheInput from '../components/ui/LinsheInput.vue'
@@ -620,6 +642,40 @@ const showBackpack = ref(false)
 const showEmojiManager = ref(false)
 const mailboxUnread = computed(() => mailboxStore.unreadCount)
 const backpackChestReady = computed(() => backpackStore.chestReady)
+
+// 《邻舍日报》：今天的报纸是否存在 + 是否已读（红点）
+const showNewspaper = ref(false)
+const todayPaper = ref(null)
+const newspaperUnread = computed(() => {
+  if (!todayPaper.value) return false
+  try {
+    return localStorage.getItem('linshe.newspaper.last_read') !== todayPaper.value.publish_date
+  } catch {
+    return false
+  }
+})
+const newspaperHint = computed(() => todayPaper.value
+  ? `第${todayPaper.value.edition}期已印好 · 今日事，早知道`
+  : '清晨 5 点后印出 · 今日事，早知道')
+
+function openNewspaper() {
+  showNewspaper.value = true
+}
+
+// 打开看过即消红点（今天之内不再提醒）
+function onNewspaperRead(paper) {
+  todayPaper.value = paper
+  try {
+    localStorage.setItem('linshe.newspaper.last_read', paper.publish_date)
+  } catch { /* 隐私模式下静默 */ }
+}
+
+async function loadTodayPaper() {
+  try {
+    const data = await api.getTodayNewspaper()
+    todayPaper.value = data?.newspaper || null
+  } catch { /* 拉不到就只隐藏红点 */ }
+}
 
 // 置顶优先，组内按 display_name 首字母排序（中文按拼音）
 const sortedCharacters = computed(() =>
@@ -1373,6 +1429,8 @@ onMounted(async () => {
   if (chat.characters.length === 0) await chat.loadCharacters()
   // 拉一次宝箱状态，驱动入口卡上的「可开启」小圆点
   backpackStore.fetchItems()
+  // 拉今天的《邻舍日报》，驱动报纸入口卡的未读红点
+  loadTodayPaper()
 })
 </script>
 
@@ -1523,6 +1581,16 @@ onMounted(async () => {
 .nickname-input:focus { outline: none; border-color: var(--accent); }
 
 /* ── 关系图入口卡片 ── */
+/* 报纸 + 关系图同行两列；列间距沿用卡片纵向 20px 节奏 */
+.relation-entry-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.relation-entry-row .relation-entry {
+  margin-bottom: 0;
+}
 .relation-entry {
   display: flex;
   align-items: center;
@@ -1569,6 +1637,22 @@ onMounted(async () => {
 .world-icon {
   background: rgba(var(--accent-rgb), 0.08);
   color: #c06a52;
+}
+
+/* ── 今日报纸入口卡片 ── */
+.newspaper-icon {
+  background: rgba(var(--accent-rgb), 0.08);
+  color: #a8763e;
+}
+.newspaper-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-left: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 2px;
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.15);
 }
 
 /* ── 世界观标签行（档案页签导航） ── */
@@ -2593,6 +2677,14 @@ onMounted(async () => {
   .char-grid {
     grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
     gap: 10px;
+  }
+  /* 窄屏放不下两列入口：回退单行堆叠 */
+  .relation-entry-row {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .relation-entry-row .relation-entry {
+    margin-bottom: 12px;
   }
   .char-card { padding: 14px 8px 12px; }
   .char-card-avatar { width: 52px; height: 52px; font-size: 20px; }

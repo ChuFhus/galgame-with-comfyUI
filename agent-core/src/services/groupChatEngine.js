@@ -37,6 +37,7 @@ import { GROUP_LOG_LABEL } from './chatLogPrompt.js';
 import { getCheckpoint, rollbackMemoriesFromRawId } from './memory/memoryRepository.js';
 import { hybridSearch } from './memorySearch.js';
 import { getTimeTag } from './timeLight.js';
+import { getGroupNewspaperBlockFor } from './newspaperService.js';
 import { splitText } from '../utils/sentenceSplitter.js';
 import { stripImagePromptLines, stripBracePromptBlocks, isImageRuleEcho, isImageRuleEchoStart, isPlaceholderImagePrompt } from '../utils/groupImagePrompt.js';
 import { getCurrentActivity } from './scheduleManager.js';
@@ -862,6 +863,13 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
   // ── 动态指令块 ──
   const directiveBlocks = [];
   directiveBlocks.push(`<time_context>${getTimeTag(new Date())}</time_context>`);
+  // 当日《小镇早知道》：世界状态 + 特稿新闻（成员含当天主角时附带点名），群里全员共享视角
+  try {
+    const newspaperBlock = getGroupNewspaperBlockFor(group);
+    if (newspaperBlock) directiveBlocks.push(newspaperBlock);
+  } catch (err) {
+    console.warn('[group] newspaper block unavailable:', err.message);
+  }
 
   let dyn = null;         // 本轮话题引子（idle 轮从成员动态中抽取）
   let mentionAll = false; // 用户 @全体成员：本轮全员都必须发言

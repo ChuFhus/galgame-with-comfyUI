@@ -270,11 +270,17 @@ test('special moment queue: in-window entries are dispatched, past entries expir
   const charId = insertCharWithSchedule(db, '队列测试', BASE_DAY);
   // 手动写入三种状态的条目：待发送（时段内）、待发送（已过期）、普通条目
   const [inWinStart, inWinEnd] = inWindowSlot(30);
+  // 已过时段：结束时刻 = 当前分钟（nowMin >= endMin 即判过期，且不可能落进时段内）。
+  // 不能硬编码 00:00~00:10——零点后 10 分钟内运行会误判为"时段内"；
+  // 仅当恰好在 00:00 分这一分钟内运行时无法构造"已过时段"（当天尚无任何已过时刻）
+  const curMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const pastStart = Math.max(curMin - 10, 0);
+  const pastSlot = [fmtMin(pastStart), fmtMin(curMin)];
 
   const schedule = loadSchedule(db, charId);
   schedule.push(
     { startTime: inWinStart, endTime: inWinEnd, activity: '时段内约定', location: '公园', replyDelay: 0, tags: [], description: '', edited: 1, specialMomentStatus: 'pending' },
-    { startTime: '00:00', endTime: '00:10', activity: '已过时约定', location: '公园', replyDelay: 0, tags: [], description: '', edited: 1, specialMomentStatus: 'pending' },
+    { startTime: pastSlot[0], endTime: pastSlot[1], activity: '已过时约定', location: '公园', replyDelay: 0, tags: [], description: '', edited: 1, specialMomentStatus: 'pending' },
   );
   db.prepare('UPDATE daily_schedules SET schedule_json = ? WHERE character_id = ?')
     .run(JSON.stringify(schedule), charId);

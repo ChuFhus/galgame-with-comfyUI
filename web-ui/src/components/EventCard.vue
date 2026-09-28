@@ -927,10 +927,3 @@ watch(isExpired, (val) => {
 .detail-fade-enter-active, .detail-fade-leave-active { transition: opacity 0.3s ease; }
 .detail-fade-enter-from, .detail-fade-leave-to { opacity: 0; }
 </style>
-
-<style>
-/* lightbox 必须在 detail-overlay (z-index:200) 之上 */
-.vel-modal, .vel-img-wrapper, .vel-img {
-  z-index: 999 !important;
-}
-</style>

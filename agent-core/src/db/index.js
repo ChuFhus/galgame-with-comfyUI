@@ -751,6 +751,30 @@ function initSchema(db) {
       appearance_desc TEXT DEFAULT '',   -- v2：spirit生成用外观描述（用户配置外观）
       updated_at DATETIME
     );
+
+    -- 小镇预告报纸《邻舍日报》：每日一份，每天零点后由 replyQueueScheduler 补当天份
+    -- items_json：普通新闻 [{category,title,content,image}]；character_event_json：绑定角色的特稿
+    -- {title,content,image,note,character_name,character_avatar}；world_state_json：15% 概率出现的当日全员状态
+    -- {name,description,news,image,effect_prompt}（注入口与道具 buff 同位，见 chat.js 稳定块[1]）
+    -- moment_done/complaint_after：绑定角色当日吐槽朋友圈的排期与完成标记（momentScheduler 消费）
+    -- world_dismissed：读者在日报里手动「消除影响」的标记；置 1 后当天世界状态不再注入任何提示词
+    -- character_id 不设外键：报纸是"已印出的历史"，角色之后被删除也不得抹掉主角链接
+    -- （旧库带 ON DELETE SET NULL 的版本由 migrateNewspaperDropForeignKey 重建）
+    CREATE TABLE IF NOT EXISTS town_newspapers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      publish_date TEXT NOT NULL UNIQUE,             -- 本地日期 YYYY-MM-DD（getLocalDateKey 口径）
+      name TEXT NOT NULL DEFAULT '',                 -- 报头名
+      edition INTEGER NOT NULL DEFAULT 1,            -- 期号（历史最大期号 + 1）
+      items_json TEXT NOT NULL DEFAULT '[]',
+      character_id INTEGER,
+      character_event_json TEXT,
+      world_state_json TEXT,
+      world_dismissed INTEGER NOT NULL DEFAULT 0,
+      moment_done INTEGER NOT NULL DEFAULT 0,
+      complaint_after DATETIME,                      -- UTC（与 datetime('now') 同口径比较）
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_town_newspapers_date ON town_newspapers(publish_date);
   `);
 
   // 只补齐历史 NULL；保留用户显式关闭后台闲聊的 idle_enabled=0。
@@ -845,6 +869,13 @@ function initSchema(db) {
 
   // 迁移: characters 表新增 next_moment_at 列
   migrateMomentsSchema(db);
+
+  // 迁移: town_newspapers 去掉 character_id 外键（报纸主角链接不随角色删除被置空）
+  migrateNewspaperDropForeignKey(db);
+
+  // 迁移: town_newspapers 加 world_dismissed 列（日报手动消除世界影响）；
+  // 必须在外键重建之后执行——重建出的表不带该列
+  migrateNewspaperWorldDismissed(db);
 
   // 迁移: moment_unread 计数 → 时序方案 (last_moments_seen_at)
   migrateMomentUnreadToTimestamp(db);
@@ -1395,6 +1426,61 @@ function migrateMomentsSchema(db) {
     migrateMomentPostUserAuthors(db);
   } catch (err) {
     console.log('[db] migrateMomentsSchema error:', err.message);
+  }
+}
+
+/**
+ * 迁移: town_newspapers 重建为无外键版本。
+ * 初版把 character_id 设了 REFERENCES characters(id) ON DELETE SET NULL，角色被删除时
+ * 报纸的主角链接会被置空——报纸是"已印出的历史"，不应随角色删除失联。
+ */
+export function migrateNewspaperDropForeignKey(db) {
+  try {
+    const fks = db.pragma('foreign_key_list(town_newspapers)');
+    if (!Array.isArray(fks) || fks.length === 0) return; // 新库或已迁移
+    const fkWasOn = db.pragma('foreign_keys', { simple: true });
+    if (fkWasOn) db.pragma('foreign_keys = OFF');
+    db.exec(`
+      CREATE TABLE town_newspapers_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        publish_date TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL DEFAULT '',
+        edition INTEGER NOT NULL DEFAULT 1,
+        items_json TEXT NOT NULL DEFAULT '[]',
+        character_id INTEGER,
+        character_event_json TEXT,
+        world_state_json TEXT,
+        moment_done INTEGER NOT NULL DEFAULT 0,
+        complaint_after DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO town_newspapers_new (id, publish_date, name, edition, items_json, character_id, character_event_json, world_state_json, moment_done, complaint_after, created_at)
+        SELECT id, publish_date, name, edition, items_json, character_id, character_event_json, world_state_json, moment_done, complaint_after, created_at FROM town_newspapers;
+      DROP TABLE town_newspapers;
+      ALTER TABLE town_newspapers_new RENAME TO town_newspapers;
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_town_newspapers_date ON town_newspapers(publish_date)`);
+    if (fkWasOn) db.pragma('foreign_keys = ON');
+    console.log('[db] town_newspapers: dropped character_id foreign key (paper survives character deletion)');
+  } catch (err) {
+    console.log('[db] migrateNewspaperDropForeignKey error:', err.message);
+  }
+}
+
+/**
+ * 迁移: town_newspapers 加 world_dismissed 列（默认 0）。
+ * 读者可在日报里手动「消除影响」当天世界状态；旧库缺列时补齐。
+ */
+export function migrateNewspaperWorldDismissed(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(town_newspapers)`).all();
+    if (!cols.length) return; // 表还没建（新库走 CREATE TABLE 分支）
+    if (!cols.find(c => c.name === 'world_dismissed')) {
+      db.exec(`ALTER TABLE town_newspapers ADD COLUMN world_dismissed INTEGER NOT NULL DEFAULT 0`);
+      console.log('[db] Added town_newspapers.world_dismissed column (default 0)');
+    }
+  } catch (err) {
+    console.log('[db] migrateNewspaperWorldDismissed error:', err.message);
   }
 }
 

@@ -11,6 +11,7 @@
 import { getDb } from '../db/index.js';
 import { config } from '../config.js';
 import { getTownMaps } from './town/townService.js';
+import { getPendingComplaint, markComplaintDone, postponeComplaint, buildComplaintTopic } from './newspaperService.js';
 
 // 生成函数由路由层装配时注入（setMomentPostGenerator / setTownNpcPostGenerator），
 // 避免服务层静态反向依赖路由模块（service → route）。
@@ -33,6 +34,65 @@ function toSQLiteDate(iso) {
   return iso.replace('T', ' ').replace(/\.\d+Z$/, '').replace(/Z$/, '');
 }
 
+// ── 《小镇早知道》吐槽帖 ──
+
+/**
+ * 当期报纸主角的额外吐槽帖：complaint_after 到期且角色可发时，用强制话题生成一条。
+ * 成功后若角色原有的 next_moment_at 仍在未来则恢复原值——吐槽帖是"额外"的，不推迟常规发帖节奏。
+ * @returns {boolean} 本 tick 是否已处理吐槽帖（true 时调用方直接结束本 tick）
+ */
+async function maybePostNewspaperComplaint() {
+  const pending = getPendingComplaint();
+  if (!pending) return false;
+  const { newspaper, character, event } = pending;
+  const db = getDb();
+
+  if (!momentPostGenerator) {
+    console.warn('[momentScheduler] newspaper complaint pending but moment post generator not wired yet');
+    return false;
+  }
+
+  // 与常规候选一致的可发性校验（不满足就下个 tick 再试）
+  const blocked = db.prepare(`
+    SELECT 1 AS blocked FROM characters
+    WHERE id = ? AND (
+      moments_disabled = 1
+      OR (is_sleeping IS NOT NULL AND is_sleeping = 1)
+      OR (temporary_wake_until IS NOT NULL AND temporary_wake_until > datetime('now'))
+      OR id IN (SELECT character_id FROM character_events WHERE status IN ('pending','open','engaged'))
+    )
+  `).get(character.id);
+  if (blocked) return false;
+
+  const topic = buildComplaintTopic(event, character.display_name);
+  if (!topic) {
+    // 特稿数据缺失（如旧数据），标记完成避免整天空转
+    markComplaintDone(newspaper.id);
+    return false;
+  }
+
+  processing = true;
+  try {
+    const prevNextAt = character.next_moment_at;
+    await momentPostGenerator(character, { forcedTopic: topic });
+    markComplaintDone(newspaper.id);
+    // generateMomentPost 成功后会把 next_moment_at 推到 2~8 小时后；原值仍在未来则恢复
+    if (prevNextAt && db.prepare(`SELECT datetime(?) > datetime('now') AS is_future`).get(prevNextAt)?.is_future) {
+      db.prepare('UPDATE characters SET next_moment_at = ? WHERE id = ?').run(prevNextAt, character.id);
+    }
+    console.log(`[momentScheduler] Newspaper complaint posted for ${character.display_name}`);
+    return true;
+  } catch (err) {
+    if (err.message !== 'ALREADY_GENERATING') {
+      postponeComplaint(newspaper.id, 30);
+      console.error(`[momentScheduler] Newspaper complaint failed for ${character.display_name}:`, err.message);
+    }
+    return false;
+  } finally {
+    processing = false;
+  }
+}
+
 async function tick() {
   if (processing) {
     console.log('[momentScheduler] Previous post still generating, skip this tick');
@@ -41,6 +101,9 @@ async function tick() {
 
   const db = getDb();
   try {
+    // 0. 报纸吐槽帖：《小镇早知道》当期主角的额外发圈（优先于常规发帖，处理过就结束本 tick）
+    if (await maybePostNewspaperComplaint()) return;
+
     // 找出下一个需要发帖的角色（next_moment_at <= now 或 NULL）
     // 跳过有活跃奇遇事件的角色
     const candidate = db.prepare(`

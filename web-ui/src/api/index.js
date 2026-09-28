@@ -1269,6 +1269,22 @@ export async function deleteLetter(id) {
   return request(`/mailbox/${id}`, { method: 'DELETE' })
 }
 
+// ── 《邻舍日报》预告报纸 ──
+
+export async function getTodayNewspaper() {
+  return request(`/newspaper/today`)
+}
+
+export async function generateNewspaper() {
+  return request(`/newspaper/generate`, { method: 'POST' })
+}
+
+// 消除/恢复今天的世界影响（异闻不再/重新注入角色提示词）
+export async function dismissNewspaperWorldState(dismissed) {
+  return request(`/newspaper/dismiss-world`, { method: 'POST', body: { dismissed } })
+}
+
+
 // ── 事件库管理（奇遇事件类型 / 朋友圈话题）──
 
 export async function listEventTypes() {
