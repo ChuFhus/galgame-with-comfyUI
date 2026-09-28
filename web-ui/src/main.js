@@ -13,7 +13,8 @@ initTheme()
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { createRouter, createWebHashHistory } from 'vue-router'
-import App from './App.vue'
+import App from './AppRoot.vue'
+import StandingDisplayView from './views/StandingDisplayView.vue'
 import ChatView from './views/ChatView.vue'
 import MomentsView from './views/MomentsView.vue'
 import EventsView from './views/EventsView.vue'
@@ -29,6 +30,7 @@ import GroupChatView from './views/GroupChatView.vue'
 import TownView from './views/TownView.vue'
 
 const routes = [
+  { path: '/standing-display', component: StandingDisplayView, meta: { standingDisplay: true } },
   { path: '/', redirect: '/chat' },
   { path: '/chat', component: ChatView },
   { path: '/chat/:id', component: ChatView },

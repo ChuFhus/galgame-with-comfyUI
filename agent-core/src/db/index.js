@@ -27,6 +27,8 @@ import { migrateTownItemTemplateSchema } from './townItemTemplateSchema.js';
 import { cleanupInterruptedChestItems } from '../services/itemLifecycle.js';
 import { migrateWeatherHourlySchema } from './weatherHourlySchema.js';
 
+import { migrateExpressionStandings, recoverExpressionStandingJobs } from './expressionStandingSchema.js';
+
 let db;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +57,7 @@ export function getDb() {
 // ── 启动清理：进程中断后，"生成中/处理中" 状态永远不会被完成，统一回收 ──
 // moment_posts、mailbox_letters 自带启动自愈逻辑，不在此重复处理
 function cleanupOrphanedInFlight(database) {
+  recoverExpressionStandingJobs(database);
   cleanupTownDialogueRequests(database);
   const tasks = [
     // 表名, 中断状态, 回收为（interrupted 后可重新生成的状态）
@@ -866,6 +869,7 @@ function initSchema(db) {
 
   // 保留完整预报时间；历史天气缓存不推断日期或回填。
   migrateWeatherHourlySchema(db);
+  migrateExpressionStandings(db);
 
   // 迁移: characters 表新增 next_moment_at 列
   migrateMomentsSchema(db);

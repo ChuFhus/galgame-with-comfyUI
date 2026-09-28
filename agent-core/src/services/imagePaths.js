@@ -22,6 +22,7 @@ export const IMAGE_CATEGORIES = {
   emoji:     { dir: 'emoji',     label: '表情包' },
   items:     { dir: 'items',     label: '道具' },
   standing:  { dir: 'standing',  label: '立绘' },
+  expression_standing: { dir: 'expression_standing', label: '表情立绘' },
   newspaper: { dir: 'newspaper', label: '报纸' }, // 《邻舍日报》新闻配图
   town_service: { dir: 'town_service', label: '小镇生活' }, // 打工与服务共用此目录
 };

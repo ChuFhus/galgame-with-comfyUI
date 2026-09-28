@@ -565,6 +565,7 @@ ${characterName}: "${cleanAssistant.slice(0, 500)}"
       dominantEmotion: 'neutral',
       affinityDelta: 0,
       reason: '(LLM 评估失败，返回零 delta)',
+      evaluationSucceeded: false,
       source: 'llm',
     };
   }

@@ -32,6 +32,8 @@ import { parseEmojiText, buildEmojiNote, getCharacterEmojiMap } from '../service
 import { getReplyDelay, formatScheduleContext, getCurrentActivity, isTempWoken, extendTempWake } from '../services/scheduleManager.js';
 import { detectAndApplyAppointment } from '../services/appointmentDetector.js';
 import { broadcast } from '../services/unifiedStreamBus.js';
+import { getStandingDisplay, publishStandingKeys } from '../services/standingDisplay.js';
+import { randomUUID as standingTurnId } from 'crypto';
 import { ensureDreamOnDemand, generateLiveDreamMurmur, decorateDreamImagePrompt } from '../services/dreamService.js';
 import { getTimeTag, getLightHint, getLightNoteWithWeather } from '../services/timeLight.js';
 import { getCoreDialogueRules, getChatRhythmRules, JUDGE_PROMPT, detectImageIntent } from '../builtinRules.js';
@@ -320,6 +322,9 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
 
   const db = getDb();
   const characterId = req.params.id;
+  if (!db.prepare('SELECT id FROM characters WHERE id=?').get(characterId)) return res.status(404).json({ error: '角色不存在' });
+  getStandingDisplay().select(Number(characterId));
+  const standingTurn = getStandingDisplay().begin(characterId, client_msg_id || standingTurnId());
   const conversationId = convId(characterId);
   const emojiMap = getCharacterEmojiMap(characterId, db);
   const emojiNote = buildEmojiNote([...emojiMap.keys()]);
@@ -499,7 +504,10 @@ router.post('/characters/:id/chat', createCharacterTownChatGuard({ getDb, getTow
   // 生图期间 SSE 流可能长时间无数据写入，禁用 socket/response 超时
   req.socket.setTimeout(0);
   res.setTimeout(0);
-  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const send = (event, data) => {
+    if (event === 'token' && data?.emojiKeys?.length) publishStandingKeys(standingTurn, data.emojiKeys);
+    return res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
 
   try {
     // 1. 保存用户消息（双表：raw_messages 完整原文 + messages 单条展示）
@@ -1115,6 +1123,7 @@ ${coreRules}
           const parsedSeg = parseEmojiText(segText, emojiMap);
           send('token', {
             content: parsedSeg.content,
+            emojiKeys: parsedSeg.keys,
             ...(parsedSeg.images.length > 0 ? { images: parsedSeg.images } : {}),
             ...(parsedSeg.leadingSticker ? { leadingSticker: true } : {}),
           });
@@ -1131,6 +1140,7 @@ ${coreRules}
         const parsedSeg = parseEmojiText(segText, emojiMap);
         send('token', {
           content: parsedSeg.content,
+            emojiKeys: parsedSeg.keys,
           ...(parsedSeg.images.length > 0 ? { images: parsedSeg.images } : {}),
           ...(parsedSeg.leadingSticker ? { leadingSticker: true } : {}),
         });
@@ -1244,6 +1254,7 @@ ${coreRules}
           const parsedSeg = parseEmojiText(segText, emojiMap);
           send('token', {
             content: parsedSeg.content,
+            emojiKeys: parsedSeg.keys,
             ...(parsedSeg.images.length > 0 ? { images: parsedSeg.images } : {}),
             ...(parsedSeg.leadingSticker ? { leadingSticker: true } : {}),
           });
@@ -1309,6 +1320,7 @@ ${coreRules}
       send('msg_saved', { id: r.lastInsertRowid, role: 'assistant', created_at: new Date().toISOString() });
     }
     const lastInsertRowid = savedIds[savedIds.length - 1];
+    getStandingDisplay().complete(standingTurn);
 
     // 8.8 回复猜想 ← 启动（不 await，与情绪评估并行发起 LLM 调用）
     //      每次用户消息到达时重置冷却 → 每轮对话最多触发一次 → 写入 20s 冷却
@@ -1380,6 +1392,7 @@ ${coreRules}
         const newAffinity = evolveAffinity(emotionCleanup.currentAffinity, affinityDelta ?? 0);
         saveEmotionSnapshot(conversationId, lastInsertRowid, evolved, dominantEmotion, newAffinity, affinityDelta, reason);
         saveAffinity(characterId, newAffinity);
+        if (source === 'llm' && r.evaluationSucceeded !== false) getStandingDisplay().reason(standingTurn, reason);
         if (config.features.realtimeAffinityDisplay) {
           send('affinity_update', { affinity: newAffinity, affinityDelta: affinityDelta ?? 0, lastReason: reason || '' });
         }
@@ -2100,6 +2113,7 @@ async function handleNeedImageFlow(conversationId, character, send, preExistingT
         const parsedSeg = parseEmojiText(segText, emojiMap);
         send('token', {
           content: parsedSeg.content,
+            emojiKeys: parsedSeg.keys,
           ...(parsedSeg.images.length > 0 ? { images: parsedSeg.images } : {}),
           ...(parsedSeg.leadingSticker ? { leadingSticker: true } : {}),
         });

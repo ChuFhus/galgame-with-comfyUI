@@ -1736,3 +1736,15 @@ export function regenerateTownPlayerPortrait(overrides = {}) {
 export { getTownWallet, executeTownLifeCommand, createTownTargetTradeCommand,
   fetchTownInteractions, offerTownInteraction, respondTownInteraction,
   fetchTownNpcFunctions, receiveTownNpcGift } from './townLife.js'
+
+
+// 独立角色表情立绘；与普通立绘和小镇素材分开存储。
+const expressionStandingPath = (id, slot = '') => `/characters/${id}/expression-standings${slot ? '/' + encodeURIComponent(slot) : ''}`
+export const listExpressionStandings = id => request(expressionStandingPath(id))
+export const generateExpressionStandings = (id, body) => request(expressionStandingPath(id) + '/generate', { method: 'POST', body })
+export const controlExpressionStandingTask = (id, jobId, action) => request(expressionStandingPath(id) + `/jobs/${encodeURIComponent(jobId)}/${action}`, { method: 'POST' })
+export const updateExpressionStandingPrompt = (id, slot, prompt, generation) => request(expressionStandingPath(id, slot) + '/prompt', { method: 'PATCH', body: { prompt, generation } })
+export const editExpressionStanding = (id, slot, action, body = {}) => request(expressionStandingPath(id, slot) + '/' + action, { method: 'POST', body })
+export const deleteExpressionStanding = (id, slot) => request(expressionStandingPath(id, slot), { method: 'DELETE' })
+export const getStandingDisplayState = () => request('/standing-display/state')
+export const setStandingDisplayCharacter = body => request('/standing-display/active', { method: 'PUT', body })

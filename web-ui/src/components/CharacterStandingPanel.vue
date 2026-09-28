@@ -12,11 +12,11 @@
         @keydown.space.prevent="ctl.toggleFunc"
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+          <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" />
         </svg>
-        角色立绘
+        角色形象
         <svg class="standing-chevron" :class="{ open: ctl.funcOpen }" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="6 9 12 15 18 9"/>
+          <polyline points="6 9 12 15 18 9" />
         </svg>
       </div>
       <div
@@ -31,7 +31,7 @@
         <img v-if="character?.standing_url" :src="ctl.displayUrl" class="standing-img" alt="" />
         <div v-else-if="!ctl.busyForChar" class="standing-empty">
           <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" />
           </svg>
           <p class="standing-empty-title">尚未生成立绘</p>
           <p class="standing-empty-hint"></p>
@@ -57,11 +57,13 @@
               @click="ctl.toggleMode"
               @keydown.enter.prevent="ctl.toggleMode"
               @keydown.space.prevent="ctl.toggleMode"
-            >{{ ctl.mode === 'dynamic' ? '张力！' : '普通' }}</div>
+            >
+{{ ctl.mode === 'dynamic' ? '张力！' : '普通' }}
+</div>
             <linshe-input
               v-model="ctl.requirement"
               :size="controlSize"
-              placeholder="额外立绘需求"
+              placeholder="额外形象需求"
               @keyup.enter="ctl.generate"
             />
           </div>
@@ -71,12 +73,12 @@
               <linshe-button variant="primary" :size="controlSize" :loading="ctl.reimageing" :disabled="ctl.busy" @click="ctl.regenerate">再次Roll图</linshe-button>
             </template>
             <template v-else>
-              <linshe-button variant="primary" :size="controlSize" :loading="ctl.generating" :disabled="ctl.busy" @click="ctl.generate">生成立绘</linshe-button>
+              <linshe-button variant="primary" :size="controlSize" :loading="ctl.generating" :disabled="ctl.busy" @click="ctl.generate">生成形象</linshe-button>
             </template>
           </div>
           <div class="standing-manage-btns">
-            <linshe-button variant="secondary" :size="controlSize" :disabled="ctl.busy || ctl.uploading" @click="pickFile">上传立绘</linshe-button>
-            <linshe-button v-if="character?.standing_url" variant="ghost" :size="controlSize" :disabled="ctl.busy" @click="ctl.remove">删除立绘</linshe-button>
+            <linshe-button variant="secondary" :size="controlSize" :disabled="ctl.busy || ctl.uploading" @click="pickFile">上传形象</linshe-button>
+            <linshe-button v-if="character?.standing_url" variant="ghost" :size="controlSize" :disabled="ctl.busy" @click="ctl.remove">删除形象</linshe-button>
           </div>
         </div>
       </Transition>

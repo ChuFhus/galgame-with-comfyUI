@@ -30,6 +30,7 @@
           <div class="chat-header-schedule" v-if="currentScheduleText">{{ currentScheduleText }}</div>
         </div>
         <div class="chat-header-right">
+          <linshe-button class="standing-entry-desktop" variant="ghost" size="sm" @click="openStandingDisplayPage">同步形象展示 ↗</linshe-button>
           <span class="affinity-reason-wrap">
             <Transition name="roll">
               <span v-if="realtimeAffinityEnabled && chat.realtimeAffinity?.lastReason" :key="chat.affinityKey" class="header-reason">
@@ -266,6 +267,11 @@
         </div>
 
         <div class="sp-divider"></div>
+
+        <div role="button" tabindex="0" class="sp-btn standing-entry-mobile" @click="openStandingDisplayPage" @keydown.enter.prevent="openStandingDisplayPage" @keydown.space.prevent="openStandingDisplayPage">
+          <svg class="sp-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="18" height="15" rx="3" /><path d="M8 22h8M12 18v4" /><circle cx="12" cy="8" r="2" /><path d="M8 15a4 4 0 0 1 8 0" /></svg>
+          同步形象展示
+        </div>
 
         <!-- 编辑人格 → 二级弹窗 -->
         <div role="button" tabindex="0" class="sp-btn" @click="openCharEditor" @keydown.enter.prevent="openCharEditor" @keydown.space.prevent="openCharEditor">
@@ -589,6 +595,15 @@ import LinsheButton from '../components/ui/LinsheButton.vue'
 import LinsheSwitch from '../components/ui/LinsheSwitch.vue'
 import { userAvatar, loadUserAvatar } from '../userConfig.js'
 import * as api from '../api/index.js'
+import { openStandingDisplay, standingDisplayUrl, selectStandingCharacter } from '../utils/standingDisplay.js'
+async function openStandingDisplayPage() {
+  closeSettings()
+  if (isMobile?.value) {
+    await router.push('/standing-display')
+    return
+  }
+  if (!(await openStandingDisplay())) window.location.assign(standingDisplayUrl())
+}
 import { getCharacterPortrait, addPortrait, updatePortrait, deletePortrait } from '../api/index.js'
 import { useSettingsStore } from '../stores/settings.js'
 import { useEventsStore } from '../stores/events.js'
@@ -1536,6 +1551,7 @@ onMounted(async () => {
   scheduleStore.fetchOverview(true) // silent: 获取日程概览用于 header 显示
   const targetId = route.params.id ? parseInt(route.params.id) : (chat.characters.length > 0 ? chat.characters[0].id : null)
   if (targetId && targetId !== chat.activeCharId) {
+    if (route.params.id) selectStandingCharacter(targetId)
     await chat.selectChar(targetId)
   }
   await nextTick()
@@ -1559,6 +1575,7 @@ onUnmounted(() => {
 watch(() => route.params.id, (newId) => {
   const id = parseInt(newId)
   if (id && id !== chat.activeCharId) {
+    selectStandingCharacter(id)
     chat.selectChar(id)
   }
 })
@@ -1703,6 +1720,12 @@ function renderContent(text) {
 </script>
 
 <style scoped>
+.sp-btn.standing-entry-mobile { display:none; }
+@media (max-width:767px) {
+  .standing-entry-desktop { display:none; }
+  .sp-btn.standing-entry-mobile { display:flex; }
+}
+
 .chat-view { flex:1; display:flex; flex-direction:column; height:100vh; height:100dvh; overflow:hidden; background:transparent; position:relative; }
 
 /* ── 角色自定义聊天背景层（位于内容之下，随 activeChar.chat_bg_path 切换）── */

@@ -1,5 +1,5 @@
 <template>
-  <div class="img-editor" :class="{ 'is-large': cropMode, 'is-portrait': isPortrait, 'is-checking': gapOpen }">
+  <div class="img-editor" :class="{ 'fit-container': fitContainer, 'is-large': cropMode, 'is-portrait': isPortrait, 'is-checking': gapOpen }">
     <!-- 画布区：canvas 内部保持原图像素；CSS 只负责适配浏览器高度 -->
     <div
       ref="frameEl"
@@ -18,7 +18,7 @@
       </div>
       <div v-if="!loaded" class="ie-loading" role="status">{{ loadError || loadingText || '加载中…' }}</div>
       <Teleport to="body">
-        <aside v-show="!gapOpen" class="ie-info" :style="infoStyle" aria-label="图片生成配置">
+        <aside v-if="showGeneration" v-show="!gapOpen" class="ie-info" :style="infoStyle" aria-label="图片生成配置">
           <TownPromptPanel
             :model-value="generationParams"
             :step="generationStep"
@@ -128,6 +128,10 @@ const props = defineProps({
   generationParams: { type: Object, required: true },
   isPortrait: { type: Boolean, default: false },
   configStatus: { type: String, default: '' },
+  saveImage: { type: Function, default: null },
+  cropImage: { type: Function, default: null },
+  fitContainer: { type: Boolean, default: false },
+  showGeneration: { type: Boolean, default: true },
 })
 const emit = defineEmits(['saved', 'cropped', 'update:generationParams'])
 
@@ -815,7 +819,7 @@ async function confirmCrop() {
   cropping.value = true
   try {
     if (dirty.value && !(await save())) return
-    await api.cropTownAsset(props.assetId, { x: nx, y: ny, w: nw, h: nh })
+    await (props.cropImage ? props.cropImage({ x: nx, y: ny, w: nw, h: nh }) : api.cropTownAsset(props.assetId, { x: nx, y: ny, w: nw, h: nh }))
     await loadImage(freshSrc())
     resetCrop()
     emit('cropped')
@@ -839,7 +843,7 @@ async function save() {
       data.data.set(applyWhiteGapStrength(data.data, gapSession.value.thresholds, gapStrength.value))
       context.putImageData(data, 0, 0)
     }
-    await api.saveTownAssetImage(props.assetId, output.toDataURL('image/png'))
+    await (props.saveImage ? props.saveImage(output.toDataURL('image/png')) : api.saveTownAssetImage(props.assetId, output.toDataURL('image/png')))
     if (version !== imageVersion) return true
     img = output
     imageVersion++
@@ -1096,7 +1100,7 @@ onBeforeUnmount(() => {
   .ie-gap-heading { gap: 4px; }
 }
 .ie-hint { font-size: 10px; color: var(--text-secondary); }
-.ie-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.ie-buttons { display: flex; gap: 6px; flex-wrap: wrap;margin-bottom: 5px; }
 /* 主按钮贴右：行内注入的是父组件传进来的按钮，:last-child 命不中，所以显式标记主按钮 */
 .ie-buttons > .ie-primary { margin-left: auto; }
 
@@ -1120,4 +1124,7 @@ onBeforeUnmount(() => {
 
 .ie-fade-enter-active, .ie-fade-leave-active { transition: opacity 0.25s ease, transform 0.25s ease; }
 .ie-fade-enter-from, .ie-fade-leave-to { opacity: 0; transform: translate(-50%, 8px); }
+.img-editor.fit-container { flex:1; min-height:0; overflow:hidden; }
+.img-editor.fit-container .ie-frame { flex:1; min-height:0; height:auto; max-height:none; }
+.img-editor.fit-container .ie-toolbar { flex-shrink:0; }
 </style>

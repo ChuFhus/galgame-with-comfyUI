@@ -21,6 +21,7 @@ import {
   stateToPrompt, affinityToPrompt, loadAffinity,
 } from './emotionEngine.js';
 import { broadcast } from './unifiedStreamBus.js';
+import { getStandingDisplay } from './standingDisplay.js';
 import { getFreshUnsharedDream, markDreamShared } from './dreamService.js';
 import { createCharacterTownLifeContext } from './characterTownLifeContext.js';
 import { createTownActorRegistry } from './town/townActorRegistry.js';
@@ -166,6 +167,7 @@ async function processReplyQueue() {
   try {
     const conversationId = entry.conversation_id;
     const characterId = entry.character_id;
+    const standingTurn = getStandingDisplay().begin(characterId, `delayed:${entry.id}`);
 
     // 构建 LLM 上下文（模拟 chat.js 的关键消息层）
     const msgs = buildDelayedReplyContext(entry, allPending, isSleepWakeup, dream);
@@ -214,6 +216,7 @@ async function processReplyQueue() {
     // 不需要——它们已经在 allPending 里并标记为 processing→done
 
     // 通过统一 SSE 推送到前端
+    getStandingDisplay().complete(standingTurn);
     broadcast('delayed_reply', {
       character_id: characterId,
       display_name: entry.display_name,

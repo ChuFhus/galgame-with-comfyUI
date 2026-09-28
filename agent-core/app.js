@@ -23,6 +23,7 @@ import portraitsRoutes from './src/routes/portraits.js';
 import notificationsRoutes from './src/routes/notifications.js';
 import eventsRoutes from './src/routes/events.js';
 import streamRoutes from './src/routes/stream.js';
+import expressionStandingRoutes from './src/routes/expressionStandings.js';
 import scheduleRoutes from './src/routes/schedule.js';
 import workflowsRoutes from './src/routes/workflows.js';
 import mailboxRoutes from './src/routes/mailbox.js';
@@ -111,6 +112,7 @@ app.use('/avatars', express.static(path.join(DATA_DIR, 'avatars'), { maxAge: '30
 app.use('/town-assets', express.static('data/town/assets'));
 
 // API 路由（wrapRouterAsync：给所有 async 处理器加 rejection 兜底，防请求挂起）
+app.use('/api', wrapRouterAsync(expressionStandingRoutes));
 app.use('/api', wrapRouterAsync(chatRoutes));           // /api/characters/:id/chat, /api/characters/:id/messages
 app.use('/api/memory', wrapRouterAsync(memoryRoutes));
 app.use('/api/images', wrapRouterAsync(imagesRoutes));

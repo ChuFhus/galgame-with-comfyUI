@@ -40,6 +40,16 @@ export function getLastWorkflowMode() {
   return lastUsedWorkflowMode;
 }
 
+/** Freeze the configurable inputs for a multi-image batch without changing global settings. */
+export function captureImageGenerationConfig(scene, workflowScene = null) {
+  return {
+    customWorkflow: path.basename(resolveWorkflowPath(workflowScene)),
+    globalLoraSnapshot: structuredClone(filterGlobalLoras(config.comfyui.globalLora || [], scene)),
+    qualityPrompt: config.comfyui.qualityPrompt || '',
+    negativePrompt: config.comfyui.negativePrompt || '',
+  };
+}
+
 export { checkWorkflowHealth };
 
 /**
@@ -255,7 +265,7 @@ function buildWorkflow(promptText, overrides = {}) {
         : resolveWorkflowPath(workflowScene))
     : resolveWorkflowPath(workflowScene);
   // 全局 LoRA 前置 + 角色 LoRA，按 path 去重（全局优先），关闭的 LoRA 跳过
-  const globalLoras = filterGlobalLoras(config.comfyui.globalLora || [], overrides.scene);
+  const globalLoras = overrides.globalLoraSnapshot ?? filterGlobalLoras(config.comfyui.globalLora || [], overrides.scene);
   const providedLoras = (overrides.loras || [])
     .map(l => ({ ...l, path: normalizeLoraValue(l.path) }))
     .filter(l => l.path && typeof l.path === 'string');
@@ -294,10 +304,12 @@ function buildWorkflow(promptText, overrides = {}) {
     [NODE_TITLES.height]: overrides.height ?? config.comfyui.height,
   };
   // 质量提示词：非空才覆盖工作流节点里的默认值，留空不注入
-  const qualityPrompt = typeof config.comfyui.qualityPrompt === 'string' ? config.comfyui.qualityPrompt.trim() : '';
+  const qualityValue = overrides.qualityPrompt ?? config.comfyui.qualityPrompt;
+  const qualityPrompt = typeof qualityValue === 'string' ? qualityValue.trim() : '';
   if (qualityPrompt) defaults[NODE_TITLES.quality] = qualityPrompt;
   // 负面提示词：非空才覆盖工作流节点里的默认值，留空不注入
-  const negativePrompt = typeof config.comfyui.negativePrompt === 'string' ? config.comfyui.negativePrompt.trim() : '';
+  const negativeValue = overrides.negativePrompt ?? config.comfyui.negativePrompt;
+  const negativePrompt = typeof negativeValue === 'string' ? negativeValue.trim() : '';
   if (negativePrompt) defaults[NODE_TITLES.negative] = negativePrompt;
 
   for (const node of wf.nodes || []) {
@@ -513,7 +525,7 @@ const MAX_SUBMIT_RETRIES = 2;
  */
 async function submitWithRetry(rawPrompt, {
   artist, width, height, onProgress, submitRetries = MAX_SUBMIT_RETRIES,
-  loras, customWorkflow, scene, workflowScene,
+  loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
 } = {}) {
   if (config.comfyui.imageProvider === 'novelai') {
     // NovelAI receives the same prepared scene description and artist tags as ComfyUI,
@@ -527,7 +539,7 @@ async function submitWithRetry(rawPrompt, {
 
   // 2. 构建 workflow
   const { wf, wfMode } = buildWorkflow(finalPrompt, {
-    artist, width, height, loras, customWorkflow, scene, workflowScene,
+    artist, width, height, loras, customWorkflow, scene, workflowScene, globalLoraSnapshot, qualityPrompt, negativePrompt,
   });
   if (onProgress) onProgress({ stage: 'submitting' });
 

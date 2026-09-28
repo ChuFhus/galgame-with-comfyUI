@@ -38,9 +38,18 @@ export function saveEmojiCategories(keys, db = getDb()) {
   }
 
   const replace = db.transaction(() => {
-    db.prepare('DELETE FROM emoji_categories').run();
-    const insert = db.prepare('INSERT INTO emoji_categories (emoji_key, sort_order) VALUES (?, ?)');
-    list.forEach((k, i) => insert.run(k, i + 1));
+    const old = db.prepare('SELECT id,emoji_key FROM emoji_categories ORDER BY sort_order,id').all();
+    for (let i = 0; i < old.length; i++) {
+      const temp = `__category_rename_${old[i].id}__`;
+      db.prepare('UPDATE emoji_categories SET emoji_key=? WHERE id=?').run(temp, old[i].id);
+      db.prepare('UPDATE character_emojis SET emoji_key=? WHERE emoji_key=?').run(temp, old[i].emoji_key);
+    }
+    list.forEach((key, i) => {
+      if (old[i]) {
+        db.prepare('UPDATE emoji_categories SET emoji_key=?,sort_order=? WHERE id=?').run(key, i + 1, old[i].id);
+        db.prepare('UPDATE character_emojis SET emoji_key=? WHERE emoji_key=?').run(key, `__category_rename_${old[i].id}__`);
+      } else db.prepare('INSERT INTO emoji_categories(emoji_key,sort_order) VALUES(?,?)').run(key, i + 1);
+    });
   });
   replace();
   return list;
@@ -56,14 +65,15 @@ export function parseEmojiText(text, emojiMap = new Map()) {
   const raw = String(text || '');
   const images = [];
   const markerOffsets = [];
+  const keys = [];
   const cleaned = raw.replace(/[\[【]([^\]】]*)[\]】]/g, (match, key, offset) => {
     const url = emojiMap.get(String(key || '').trim());
-    if (url) { images.push(url); markerOffsets.push(offset); }
+    if (url) { images.push(url); keys.push(String(key).trim()); markerOffsets.push(offset); }
     return '';
   }).replace(/\s{2,}/g, ' ').trim();
   const firstVisible = raw.search(/[^\s\[【]/);
   const leadingSticker = images.length > 0 && markerOffsets.some(offset => firstVisible < 0 || offset < firstVisible);
-  return { content: cleaned, images: [...new Set(images)], leadingSticker };
+  return { content: cleaned, images: [...new Set(images)], leadingSticker, keys };
 }
 
 /** 构建注入 user 层最前面的表情包注明；没有可用表情时返回空字符串 */

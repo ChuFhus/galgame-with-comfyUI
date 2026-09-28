@@ -295,6 +295,7 @@ import { useBackpackStore } from '../stores/backpack.js'
 import LinsheButton from './ui/LinsheButton.vue'
 import LinsheInput from './ui/LinsheInput.vue'
 import GearIcon from './GearIcon.vue'
+import { selectStandingCharacter } from '../utils/standingDisplay.js'
 
 const props = defineProps({
   isMobile: { type: Boolean, default: false },
@@ -396,6 +397,7 @@ onMounted(() => {
 onUnmounted(() => {})
 
 async function onCharClick(c) {
+  selectStandingCharacter(c.id)
   proactive.markRead(c.id)
   await chat.selectChar(c.id)
   router.push('/chat/' + c.id)
