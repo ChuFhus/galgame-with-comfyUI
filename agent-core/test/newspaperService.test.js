@@ -54,6 +54,7 @@ test('normalizeNewspaperDraft handles world_state strictly by roll result', () =
   const ws = {
     name: '银月潮汐',
     description: '银月升至中天，潮汐漫过石阶。',
+    outfit: '全镇居民的衣摆都泛起淡淡的银色波光，像浸过月光的海水。',
     news: '号外：今夜潮汐异动。',
     effect_prompt: '今天你的情绪会随月光起伏。',
     image_prompt: 'moonlit tide over stone steps',
@@ -63,6 +64,14 @@ test('normalizeNewspaperDraft handles world_state strictly by roll result', () =
     { withWorldState: true },
   );
   assert.equal(withWs.world_state.name, '银月潮汐');
+  assert.equal(withWs.world_state.outfit, '全镇居民的衣摆都泛起淡淡的银色波光，像浸过月光的海水。');
+
+  // outfit 是可选字段：旧报纸/LLM 漏写时为空串，不阻断出报
+  const noOutfit = svc.normalizeNewspaperDraft(
+    { news: [VALID_NEWS_ITEM], character_event: VALID_EVENT, world_state: { ...ws, outfit: undefined } },
+    { withWorldState: true },
+  );
+  assert.equal(noOutfit.world_state.outfit, '');
 
   // 未掷中时即使 LLM 输出了 world_state 也要丢弃
   const withoutWs = svc.normalizeNewspaperDraft(
@@ -127,9 +136,11 @@ test('buildGroupNewspaperBlock shares news view and only names the featured memb
 test('buildFormatPrompt toggles world_state section and includes featured name', () => {
   const withWs = svc.buildFormatPrompt(true, '林小姐');
   assert.ok(withWs.includes('"world_state"'));
+  assert.ok(withWs.includes('"outfit"'), 'world_state example must carry the outfit field for appearance injection');
   assert.ok(withWs.includes('林小姐'));
   const withoutWs = svc.buildFormatPrompt(false, '林小姐');
   assert.ok(!withoutWs.includes('"effect_prompt"'), 'world_state example block must be absent');
+  assert.ok(!withoutWs.includes('"outfit"'), 'outfit field must be absent without the world_state roll');
   assert.ok(withoutWs.includes('不要出现它'));
 });
 
@@ -293,8 +304,25 @@ test('pickWorldLoot draws only from clothing and transform pools', () => {
   // 有世界观：world_outfit 加入候选
   for (let i = 0; i < 200; i++) {
     const loot = svc.pickWorldLoot(true);
-    assert.ok(['outfit', 'transform', 'world_outfit'].includes(loot.kind), `kind must be outfit|transform|world_outfit, got ${loot.kind}`);
+    assert.ok(['outfit', 'world_outfit', 'transform'].includes(loot.kind), `kind must be outfit|world_outfit|transform, got ${loot.kind}`);
   }
+});
+
+test('pickWorldLoot follows 50/50 clothing-transform split with 40% world_outfit inside clothing', () => {
+  const N = 2000;
+  const count = { outfit: 0, world_outfit: 0, transform: 0 };
+  for (let i = 0; i < N; i++) count[svc.pickWorldLoot(true).kind]++;
+  // 容差 ~±5pp（2000 次时单比例 6σ≈3.4pp，取整留裕量）
+  const ratio = k => count[k] / N;
+  assert.ok(Math.abs(ratio('transform') - 0.5) < 0.05, `transform should be ~50%, got ${(ratio('transform') * 100).toFixed(1)}%`);
+  assert.ok(Math.abs(ratio('world_outfit') - 0.2) < 0.05, `world_outfit should be ~20% (50% × 40%), got ${(ratio('world_outfit') * 100).toFixed(1)}%`);
+  assert.ok(Math.abs(ratio('outfit') - 0.3) < 0.05, `fixed outfits should be ~30%, got ${(ratio('outfit') * 100).toFixed(1)}%`);
+
+  // 无世界观：40% 分支回落固定款，world_outfit 恒为 0
+  const noWorld = { outfit: 0, transform: 0 };
+  for (let i = 0; i < N; i++) noWorld[svc.pickWorldLoot(false).kind]++;
+  assert.equal(noWorld.transform / N > 0.4 && noWorld.transform / N < 0.6, true);
+  assert.ok(noWorld.outfit / N > 0.4 && noWorld.outfit / N < 0.6, `without world setting outfit should be ~50%, got ${(noWorld.outfit / N * 100).toFixed(1)}%`);
 });
 
 test('buildFormatPrompt locks world_state to the drawn loot', () => {

@@ -8,11 +8,34 @@
  *   - character_outfits：角色专属外观/形态/装甲/衣服，在角色详情浮层配置；
  *     每个角色同时只启用一套（enabled=1 时同角色其余自动置 0）。道具的变身卡也会写入
  *     带 expires_at 的临时形态，到期由 itemScheduler 停用并恢复原形态。
+ *   - 当天《邻舍日报》world_state（getWorldStateOutfit）：全镇统一临时外观，
+ *     不落库，消除（world_dismissed=1）即消失，次日新报自动替换。
  *
  * 生图注入优先级：限时服饰 > 角色专属形态 > 人物卡原本外观（见 characterPersona.js）。
  */
 
 import { getDb } from '../db/index.js';
+import { getLocalDateKey } from '../utils/localDate.js';
+
+/**
+ * 当天《邻舍日报》的世界状态外观（如「兔女郎日」全镇换装）。
+ * 不落库、不写 global_outfits：直接读当天报纸行，world_dismissed=1 或旧报无 outfit 字段时返回 null。
+ * 与 newspaperService 不互相 import（newspaperService→itemService→outfitService，避免循环依赖）。
+ */
+function getWorldStateOutfit(db) {
+  const row = db.prepare(
+    'SELECT world_state_json FROM town_newspapers WHERE publish_date = ? AND world_dismissed = 0'
+  ).get(getLocalDateKey());
+  if (!row?.world_state_json) return null;
+  let ws = null;
+  try {
+    ws = JSON.parse(row.world_state_json);
+  } catch {
+    return null;
+  }
+  if (!ws?.outfit || !ws?.name) return null;
+  return { id: 'world_state', name: `全镇状态 · ${ws.name}`, description: ws.outfit };
+}
 
 /**
  * 查询某角色当前生效的外观（统一注入入口唯一数据来源）。
@@ -36,6 +59,8 @@ export function getActiveOutfits(characterId) {
        AND (expires_at IS NULL OR expires_at > datetime('now'))
      ORDER BY id ASC LIMIT 1`
   ).get(characterId) || null;
+  const worldOutfit = getWorldStateOutfit(db);
+  if (worldOutfit) limited.push(worldOutfit);
   return { limited, exclusive };
 }
 

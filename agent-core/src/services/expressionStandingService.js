@@ -157,7 +157,7 @@ export function startStandingBatch(id, { slotIds, requirement = '', reusePrompts
           notify(id);
           const opts = JSON.parse(row.config_json);
           const framedPrompt = prompt.startsWith(STANDING_PREFIX) ? prompt : `${STANDING_PREFIX}, ${prompt}`;
-          const result = await imageGenerator(framedPrompt, { ...opts, scene: 'portrait', workflowScene: null, promptScene: 'avatar', disableRAG: true, alreadyPrepared: true, persistPreparation: false });
+          const result = await imageGenerator(framedPrompt, { ...opts, scene: 'portrait', workflowScene: null, promptScene: 'avatar', priority: 'high', disableRAG: true, alreadyPrepared: true, persistPreparation: false });
           if (!result.success || !result.images?.length) throw new Error(result.error || '未返回立绘图片');
           await commitImage(id, slot.id, decodeImage(result.images[0].base64));
         },

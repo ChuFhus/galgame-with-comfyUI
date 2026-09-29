@@ -489,6 +489,7 @@ async function generateIntoRow(row, guard) {
       // 大立绘按立绘场景过滤全局 LoRA，其余镇内素材按小镇场景；工作流仍按小镇场景选择
       scene: isPortraitAsset(row) ? 'portrait' : 'town',
       workflowScene: 'town',
+      priority: 'high',
       disableRAG: true,
       artist: meta.artist !== undefined ? meta.artist : generationDefaults.artist,
       width: size.width,

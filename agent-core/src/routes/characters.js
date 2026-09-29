@@ -1211,6 +1211,7 @@ async function runStandingGeneration(char, promptText, { stageBase, onProgress }
     scene: 'portrait',
     workflowScene: null,
     promptScene: 'avatar',
+    priority: 'high',
     disableRAG: true,
     ragTimeoutMs: RAG_TIMEOUT_FAST_MS,
     artist: standingArtist !== null ? standingArtist : config.comfyui.momentsArtist,

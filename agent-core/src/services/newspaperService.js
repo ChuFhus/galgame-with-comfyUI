@@ -23,7 +23,7 @@ import { getLightNoteWithWeather } from './timeLight.js';
 import { extractFirstJson, repairJson } from './eventGenerator.js';
 import { buildCharacterPersona } from './characterPersona.js';
 import { charArtistOverrideWithFallback } from './characterImageOpts.js';
-import { ITEM_EFFECTS } from './itemService.js';
+import { ITEM_EFFECTS, WORLD_OUTFIT_CHANCE } from './itemService.js';
 
 export const NEWSPAPER_NAME = '邻舍日报';
 export const NEWSPAPER_TAGLINE = '今日事 · 早知道';
@@ -178,15 +178,19 @@ export function pickFeaturedCharacter(db) {
 }
 
 /**
- * 世界影响抽取：从宝箱奖励池的服装类（outfit / world_outfit）与变身类（transform）
- * 中均匀随机抽一样。发型卡、功能道具不参与。world_outfit 依赖世界观，无世界观时剔除。
+ * 世界影响抽取：服装 / 变身五五开；服装内部与开箱 rollEffectKey 同口径——
+ * 40% 命中世界观服装（WORLD_OUTFIT_CHANCE，需世界观存在，否则回落固定款），
+ * 其余在固定款里均匀抽。发型卡、功能道具不参与。
  * @returns {{ key: string, kind: string, name: string, theme: string }}
  */
 export function pickWorldLoot(hasWorldSetting = false) {
-  const pool = Object.entries(ITEM_EFFECTS)
-    .filter(([, e]) => e.kind === 'outfit' || e.kind === 'transform' || (e.kind === 'world_outfit' && hasWorldSetting))
-    .map(([key, e]) => ({ key, kind: e.kind, name: e.name, theme: e.theme }));
-  return pool[Math.floor(Math.random() * pool.length)] || null;
+  const all = Object.entries(ITEM_EFFECTS);
+  const byKind = kind => all.filter(([, e]) => e.kind === kind);
+  const pool = Math.random() < 0.5
+    ? byKind('transform')
+    : (hasWorldSetting && Math.random() < WORLD_OUTFIT_CHANCE ? byKind('world_outfit') : byKind('outfit'));
+  const [key, effect] = pool[Math.floor(Math.random() * pool.length)];
+  return { key, kind: effect.kind, name: effect.name, theme: effect.theme };
 }
 
 export async function generateDailyNewspaper() {
@@ -492,6 +496,7 @@ export function buildFormatPrompt(withWorldState, featuredName = '今日主角',
   "world_state": {
     "name": "状态名（2~6字，要让读者一眼看出今天全镇与素材里给到的「${worldLoot?.name || '今日异变'}」有关，如「全镇换装日」这种叫法，不要照抄示例）",
     "description": "第三人称说明（120~200字：这种状态今天如何笼罩小镇、居民会经历什么、到明天自然消退。全镇居民都受到素材指定的效果影响，要写出大家换上/变身后的具体样子与生活变化）",
+    "outfit": "第三人称全镇统一外观描述（60~120字：只写外观不写剧情，按素材【今日镇内异变】的效果主题取材，写清居民们换上的服装款式/变身后的形态细节——配色、材质、标志性元素等；这段文字会被作为今天的临时外观注入每个角色的外观段与立绘生成，全镇统一同一种）",
     "news": "报纸对它的报道（120~240字，可带一点「号外」式的打趣口吻，报道全镇居民受这个效果影响的众生相）",
     "effect_prompt": "第二人称状态指令（120~240字：直接告诉每个角色「今天你身上发生了什么变化、言行会有哪些具体表现」；必须紧扣素材指定的效果——今天全镇居民都换上了这套服装/变成了这种形态，把外观细节写具体；这段文字会被逐字注入每个角色的提示词，必须可直接执行，不要写成新闻报道腔）",
     "image_prompt": "英文插画描述（小镇街景整体氛围画面：居民们都呈现素材指定效果后的样子，不聚焦单个人物，画面中不出现文字）"
@@ -621,6 +626,7 @@ export function normalizeNewspaperDraft(raw, { withWorldState } = {}) {
       worldState = {
         name,
         description: cleanText(wsRaw.description, 400),
+        outfit: cleanText(wsRaw.outfit ?? wsRaw.outfitDescription, 400),
         news: cleanText(wsRaw.news, 400),
         effect_prompt: effectPrompt,
         image_prompt: cleanText(wsRaw.image_prompt ?? wsRaw.imagePrompt, 1200),

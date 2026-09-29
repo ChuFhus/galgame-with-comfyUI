@@ -50,8 +50,8 @@ const IMAGE_STALE_MINUTES = 30;
 let chestOpening = false;
 
 
-/** 世界观原创服装在「服装类别内」的概率；没有世界观时不进入该判定 */
-const WORLD_OUTFIT_CHANCE = 0.4;
+/** 世界观原创服装在「服装类别内」的概率；没有世界观时不进入该判定（报纸 pickWorldLoot 同步此口径） */
+export const WORLD_OUTFIT_CHANCE = 0.4;
 
 /** 整体掉落权重：服装卡 45 / 发型卡 20 / 功能道具卡 15 / 变身形态卡 20 */
 export const DROP_WEIGHTS = { clothes: 50, hairstyle: 20, item: 10, transform: 20 };
