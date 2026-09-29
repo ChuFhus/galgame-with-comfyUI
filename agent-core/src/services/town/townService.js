@@ -2025,6 +2025,40 @@ export function reloadMap(mapId) {
   return { ok: true, mapId: id };
 }
 
+/**
+ * 重新布局（放大/缩小地图）后，把本图所有人物（含玩家）先传送回格子 (0,0)：
+ * 旧坐标在新图上可能越界或被新建筑压住，统一回原点再随新布局重新出发。
+ * 必须在 saveMap 之后、reloadMap 重建之前同步调用（两端之间没有定时器插拍），
+ * 这样 reloadMap 的落盘把 (0,0) 写进快照，重建时 restoreAgent 就从原点落位；
+ * 若原点被新布局占用，restoreAgent 会按各自的锚点就近安置。
+ * nextWalkGrid 传新布局的可行走网格（此时 rt.map 还是旧图）：玩家据此判原点是否可落。
+ */
+export function teleportMapActorsToOrigin(mapId, { walkGrid: nextWalkGrid = null } = {}) {
+  const rt = runtimes.get(Number(mapId));
+  if (!rt?.map) return { ok: false, error: '地图未加载' };
+  withRuntime(rt, () => {
+    for (const agent of rt.agents.values()) {
+      if (agent.slotKey && rt.occupied.get(agent.slotKey) === agent.agentKey) rt.occupied.delete(agent.slotKey);
+      agent.x = 0; agent.y = 0;
+      agent.path = null; agent.moveStartedAt = 0;
+      agent.pathRetryAt = 0;
+      agent.slotKey = '0,0';
+      rt.occupied.set('0,0', agent.agentKey);
+      agent.dirty = true;
+    }
+    if (rt.player) {
+      // 玩家不占 slot，原点可走就直接落 (0,0)；被新布局堵住才就近安置
+      //（reloadMap 重建不会给玩家重新落点，留死在阻挡格上就连路都寻不出去）。
+      const grid = nextWalkGrid || rt.map.walkGrid;
+      const cell = (isWalkable(grid, 0, 0) ? { x: 0, y: 0 } : null)
+        || pickStandingCell(grid, rt.occupied, { x: 0, y: 0 }, 4);
+      if (cell) { rt.player.x = cell.x; rt.player.y = cell.y; }
+      rt.player.path = null; rt.player.moveStartedAt = 0;
+    }
+  });
+  return { ok: true, count: rt.agents.size + (rt.player ? 1 : 0) };
+}
+
 /** 落点：目标图上一次离开的位置 → 该图的户外广场 → 地图中心附近的空位 */
 function placePlayerOnMap(rt) {
   const player = shared.player;

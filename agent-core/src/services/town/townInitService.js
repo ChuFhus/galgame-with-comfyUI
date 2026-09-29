@@ -1472,6 +1472,14 @@ export function relayoutWorld() {
       locations: draft.locations,
     });
 
+    // 放大/缩小布局后人物一律先归位回 (0,0)（含玩家），再由路由的 reloadMap 落盘重建。
+    // 两步之间是同步执行，模拟拍不会插进来把人又走回旧目的地。
+    // 新布局的 walkGrid 现算一份传过去：此刻 rt.map 还是旧图，原点可走与否要按新图判。
+    const { teleportMapActorsToOrigin } = await import('./townService.js');
+    teleportMapActorsToOrigin(saved.mapId, {
+      walkGrid: buildWalkGridFromLayers(cols, rows, draft.layers, new Map(ready.map(a => [a.id, a]))),
+    });
+
     return { ok: true, mapId: saved.mapId, version: saved.version, warnings: draft.warnings || [] };
   });
 }
