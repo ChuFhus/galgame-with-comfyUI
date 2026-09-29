@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test": "node --test \"test/*.test.js\"",
-    "build": "vite build",
+    "build": "node build.mjs",
     "preview": "vite preview",
     "lint": "eslint src",
     "split-fonts": "node split-fonts.mjs"
