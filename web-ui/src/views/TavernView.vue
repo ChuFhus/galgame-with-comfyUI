@@ -274,7 +274,8 @@
                   :disabled="!recruit.desc.trim() || recruit.loading"
                   @click="doGenerate"
                 >
-                  {{ recruit.loading ? '正在酒馆招募...' : '✨ 招募角色' }}
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.1 6.4L20.5 12l-6.4 2.6L12 21l-2.1-6.4L3.5 12l6.4-2.6z" /></svg>
+                  {{ recruit.loading ? '正在酒馆招募...' : '招募角色' }}
                 </linshe-button>
               </div>
 <div v-if="recruit.error" class="gen-error">{{ recruit.error }}</div>
@@ -318,6 +319,12 @@
                     :disabled="!recruit.searchContext || recruit.loading"
                     @click="regenerateFromSearchResult"
                   >{{ recruit.loading && recruit.task === 'regenerate' ? '正在重新归纳...' : '再次生成' }}</linshe-button>
+                  <linshe-button
+                    variant="secondary"
+                    title="提供参考图，邻舍分析后重写角色卡里的「## 你的外观」"
+                    :disabled="recruit.loading"
+                    @click="showRecruitRefine = true"
+                  >修正外观</linshe-button>
                 </div>
                 <div class="modal-actions-right">
                   <linshe-button variant="secondary" @click="recruit.step = 'input'; recruit.error = ''">返回修改</linshe-button>
@@ -333,7 +340,7 @@
                 <div class="scan-text">{{ loadingTip }}</div>
               </div>
               <div v-if="recruit.result" class="recruit-appearance-hint">
-                ↑检查外观描述，可以写的少但是更需要准确，后续可在“修正外观”功能里修复
+                检查外观描述，可以写的少但是更需要准确，可通过「修正外观」按钮用参考图修复，
                 <a :href="`https://animadex.net/?mode=characters&q=${encodeURIComponent(recruit.result.name).replaceAll('_', '+')}`" target="_blank">animadex</a>直接补充tag
               </div>
             </div>
@@ -341,6 +348,16 @@
         </div>
       </Transition>
     </Teleport>
+
+    <!-- 招募预览的修正外观：结果回填到待确认的角色卡草稿（尚未创建角色，无最近图片入口） -->
+    <AppearanceRefineModal
+      v-model="showRecruitRefine"
+      :display-name="recruit.result?.display_name || ''"
+      :base-prompt="recruit.result?.base_prompt || ''"
+      apply-text="应用到角色卡"
+      apply-hint="应用后会回填到上方的待确认角色卡"
+      @applied="onRecruitAppearanceRefined"
+    />
 
     <!-- ═══════════════════════════════════════════
          世界观设置弹窗
@@ -626,6 +643,7 @@ import MailboxModal from '../components/MailboxModal.vue'
 import BackpackModal from '../components/BackpackModal.vue'
 import NewspaperModal from '../components/NewspaperModal.vue'
 import EmojiManagerModal from '../components/EmojiManagerModal.vue'
+import AppearanceRefineModal from '../components/AppearanceRefineModal.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
 import LinsheInput from '../components/ui/LinsheInput.vue'
 import { useBurst } from '../composables/useBurst.js'
@@ -869,7 +887,17 @@ function openRecruit() {
 
 function closeRecruit() {
   recruit.show = false
+  showRecruitRefine.value = false
   stopLoadingTips()
+}
+
+// ── 招募预览的修正外观（草稿卡模式：结果回填 recruit.result.base_prompt，确认招募时才落库）──
+const showRecruitRefine = ref(false)
+
+function onRecruitAppearanceRefined({ basePrompt }) {
+  if (!recruit.result) return
+  recruit.result.base_prompt = basePrompt
+  showToast('外观已应用到待确认的角色卡', 'success')
 }
 
 async function doGenerate() {
@@ -2461,17 +2489,11 @@ onMounted(async () => {
 }
 
 .recruit-appearance-hint {
-  position: absolute;
-  bottom: 20px;
-  left: 50%;
-  transform: translateX(-50%);
+  margin-top: 10px;
   font-size: 11px;
   color: var(--text-muted, #999);
-  white-space: nowrap;
+  line-height: 1.5;
   text-align: center;
-  max-width: calc(100% - 32px);
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .recruit-appearance-hint a {
   color: var(--text-muted, #999);

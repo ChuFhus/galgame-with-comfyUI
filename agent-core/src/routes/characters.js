@@ -1435,13 +1435,11 @@ Cyrene (Honkai: Star Rail) has soft pastel pink hair in a fluffy shoulder-length
 - 只描述静态外观：不要表情、动作、姿势、场景、背景、画质与镜头描述
 - 一段连贯英文，不要换行、不要中文、不要 markdown、列表、引号或任何解释，严格按示例格式输出`;
 
-// POST /api/characters/:id/refine-appearance — 分析参考图并重写外观段
-// Body: { image: <dataURL png/jpeg/webp> } → { appearance, base_prompt }
-router.post('/:id/refine-appearance', async (req, res) => {
-  const db = getDb();
-  const char = db.prepare('SELECT * FROM characters WHERE id = ?').get(req.params.id);
-  if (!char) return res.status(404).json({ error: 'Character not found' });
-
+// POST /api/characters/refine-appearance-draft — 分析参考图并重写外观段
+// 整卡文本由请求体传入（可以是待确认的草稿卡，不要求角色已入库）；
+// 已入库角色由前端把当前编辑中的 base_prompt 传上来，保证与文本框所见一致。
+// Body: { image: <dataURL png/jpeg/webp>, base_prompt, display_name } → { appearance, base_prompt, prompt_before, prompt_after }
+router.post('/refine-appearance-draft', async (req, res) => {
   const image = typeof req.body?.image === 'string' ? req.body.image : '';
   const mimeMatch = image.match(/^data:image\/(png|jpeg|webp);base64,/i);
   if (!mimeMatch) {
@@ -1451,12 +1449,17 @@ router.post('/:id/refine-appearance', async (req, res) => {
   if (image.length > 8 * 1024 * 1024) {
     return res.status(400).json({ error: '图片过大，请压缩后再上传（不超过 6MB）' });
   }
+  const basePrompt = typeof req.body?.base_prompt === 'string' ? req.body.base_prompt : '';
+  if (!basePrompt.trim()) {
+    return res.status(400).json({ error: '缺少人格卡内容，无法定位「## 你的外观」段落' });
+  }
+  const displayName = String(req.body?.display_name || '').trim() || '角色';
 
   try {
     // 语料只作为身份上下文传给模型（角色名/作品名的出处），由模型自行组织成「角色名 (作品名) has ...」的开头
-    const corpus = extractAppearanceIdentityCorpus(char.base_prompt, char.display_name);
+    const corpus = extractAppearanceIdentityCorpus(basePrompt, displayName);
     const model = config.llm.model || 'deepseek-chat';
-    console.log(`[refine-appearance] analyzing reference image for "${char.display_name}" (corpus: ${corpus.slice(0, 40)}...)`);
+    console.log(`[refine-appearance] analyzing reference image for "${displayName}" (corpus: ${corpus.slice(0, 40)}...)`);
 
     const llmResult = await chatSync([
       // system0 — 破限词（创作自由，无 roleplay），与其他创作流程口径一致
@@ -1465,7 +1468,7 @@ router.post('/:id/refine-appearance', async (req, res) => {
       {
         role: 'user',
         content: [
-          { type: 'text', text: `角色「${char.display_name}」的参考图如下。角色的身份信息（用于生成开头的「角色名 (作品名)」）：${corpus}` },
+          { type: 'text', text: `角色「${displayName}」的参考图如下。角色的身份信息（用于生成开头的「角色名 (作品名)」）：${corpus}` },
           { type: 'image_url', image_url: { url: image } },
         ],
       },
@@ -1482,12 +1485,12 @@ router.post('/:id/refine-appearance', async (req, res) => {
       return res.status(502).json({ error: '邻舍没能从图片中读出足够的外观信息，请换一张更清晰的图片重试' });
     }
 
-    const basePrompt = replaceAppearanceSection(char.base_prompt, appearance);
-    console.log(`[refine-appearance] appearance rewritten (${appearance.length} chars) for "${char.display_name}"`);
+    const newBasePrompt = replaceAppearanceSection(basePrompt, appearance);
+    console.log(`[refine-appearance] appearance rewritten (${appearance.length} chars) for "${displayName}"`);
 
     // 附上外观段前后文：结果框可编辑，前端按 before + '## 你的外观\n' + 编辑后正文 + after 自行重组
-    const { before, after } = splitAppearanceSection(char.base_prompt);
-    res.json({ ok: true, appearance, base_prompt: basePrompt, prompt_before: before, prompt_after: after });
+    const { before, after } = splitAppearanceSection(basePrompt);
+    res.json({ ok: true, appearance, base_prompt: newBasePrompt, prompt_before: before, prompt_after: after });
   } catch (err) {
     console.error('[refine-appearance] error:', err.message);
     const status = err?.status || err?.response?.status;
