@@ -402,13 +402,15 @@ ${event.note}
 </newspaper_event>`;
 }
 
-/** 群聊用：当日报纸速览（世界状态 + 特稿新闻），全员共享视角。无内容返回 '' */
+/** 群聊用：当日报纸速览（世界状态 + 特稿新闻），全员共享视角。无内容返回 ''。
+ *  特稿正文只在主角本人所在的群注入——报纸是镇上晨报，但"报上那个人今天会经历的事"
+ *  只对认识主角的群有意义；没有主角的群拿不到特稿正文，只能聊世界状态。 */
 export function buildGroupNewspaperBlock({ worldState, characterEvent, featuredMemberName } = {}) {
   const parts = [];
   if (worldState?.name && worldState?.description) {
     parts.push(`【今日状态】全镇今天都处于「${worldState.name}」——${worldState.description}群里的每位成员都在受这个状态影响，言行中自然体现。`);
   }
-  if (characterEvent?.title && characterEvent?.content) {
+  if (featuredMemberName && characterEvent?.title && characterEvent?.content) {
     let line = `【今日新闻】「${characterEvent.title}」：${characterEvent.content}`;
     if (featuredMemberName) {
       line += `\n（这条新闻的主角正是${featuredMemberName}本人——ta今天的经历会与此相符；其他成员可以像看过晨报一样自然聊起这条新闻。）`;
@@ -434,18 +436,19 @@ export function getCharacterEventBlockFor(characterId) {
   return buildCharacterEventBlock(null, safeParseJson(row.character_event_json));
 }
 
-/** groupChatEngine.js 注入口：该群的报纸块（成员含当天主角时附带点名） */
+/** groupChatEngine.js 注入口：该群的报纸块。主角不在群里 → 整块不注入：
+ *  群成员对着"特稿里陌生人的事"聊天只会出戏；世界状态不受此影响——
+ *  它仍经私聊 chat.js 稳定块作用于每个角色（那是全镇效果，与群成员构成无关） */
 export function getGroupNewspaperBlockFor(group) {
   const row = getTodayNewspaper();
-  if (!row) return '';
+  if (!row?.character_id) return '';
   const memberIds = (group?.members || []).map(m => String(m.id));
-  const featuredInGroup = row.character_id && memberIds.includes(String(row.character_id))
-    ? (group.members.find(m => String(m.id) === String(row.character_id))?.display_name || null)
-    : null;
+  const featured = group.members.find(m => String(m.id) === String(row.character_id));
+  if (!featured) return '';
   return buildGroupNewspaperBlock({
     worldState: row.world_dismissed ? null : safeParseJson(row.world_state_json),
     characterEvent: safeParseJson(row.character_event_json),
-    featuredMemberName: featuredInGroup,
+    featuredMemberName: featured.display_name || null,
   });
 }
 

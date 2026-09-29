@@ -45,6 +45,7 @@ import { detectAndApplyAppointment } from './appointmentDetector.js';
 import { resolveGroupImageLoras, parseCharacterLoras } from './groupImageLoraMatcher.js';
 import { invalidateGalleryCache } from './galleryCache.js';
 import { buildGroupEmojiNote, getCharacterEmojiMap, parseGroupEmojiText, getEmojiCategories, parseEmojiText } from './emojiService.js';
+import { refreshMentionDossiers, buildMentionDossierBlock } from './groupMentionDossier.js';
 
 export function groupConvId(groupId) { return `group_${groupId}`; }
 
@@ -883,6 +884,8 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
       const mentions = detectMentions(userMessage, group.members);
       if (mentions.length > 0) {
         directiveBlocks.push(`「${mentions[0].display_name}」被点名/提到了，必须第一个回应。`);
+        // 被点名成员的私聊资料立即抓取/刷新（有效期 3 轮，重复点名重置，各成员独立计时）
+        refreshMentionDossiers(group, mentions);
       }
     }
   } else if (trigger === 'idle') {
@@ -897,6 +900,12 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
     directiveBlocks.push(`群聊刚刚建立${group.topic ? `，主题是「${group.topic}」` : ''}。角色们打个招呼、暖个场，可以对建群这件事发表点评论。`);
   } else if (trigger === 'lull') {
     directiveBlocks.push(`角色们自然地把话题接下去（延伸刚才的话题或者开个新话头），不要重复已经说过的话。`);
+  }
+
+  // 被点名成员的私聊资料：点名当轮起持续携带 3 轮（本轮消耗一次倒计时），点谁带谁的
+  const dossierBlock = buildMentionDossierBlock(groupId);
+  if (dossierBlock) {
+    directiveBlocks.push(dossierBlock);
   }
 
   // 记忆召回范围：本群 + 全体成员各自私聊。
