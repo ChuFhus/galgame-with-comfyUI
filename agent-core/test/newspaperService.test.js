@@ -338,3 +338,35 @@ test('setWorldStateDismissed toggles today paper world state on and off', () => 
 
   db.prepare('DELETE FROM town_newspapers').run();
 });
+
+test('listNewspaperEditions and getNewspaperByDate support past edition browsing', () => {
+  const db = getDb();
+  db.prepare('DELETE FROM town_newspapers').run();
+  const insert = db.prepare(`
+    INSERT INTO town_newspapers (publish_date, name, edition, items_json, character_id, character_event_json, world_state_json, world_dismissed, moment_done, complaint_after)
+    VALUES (?, '邻舍日报', ?, ?, NULL, ?, NULL, 0, 0, NULL)
+  `);
+  insert.run('2026-09-28', 1, JSON.stringify([{ category: '市集', title: 'A', content: 'x', image: 'a.png' }]),
+    JSON.stringify({ title: '特稿甲', content: 'c', note: 'n' }));
+  insert.run('2026-09-29', 2, JSON.stringify([{ category: '民生', title: 'B', content: 'y', image: null }]),
+    JSON.stringify({ title: '特稿乙', content: 'c', note: 'n' }));
+
+  const editions = svc.listNewspaperEditions();
+  assert.equal(editions.length, 2);
+  assert.deepEqual(editions.map(e => e.edition), [2, 1], 'editions must be newest first');
+  assert.equal(editions[0].featured_title, '特稿乙');
+  assert.equal(editions[1].item_count, 1);
+
+  const past = svc.getNewspaperByDate('2026-09-28');
+  assert.equal(past.edition, 1);
+  assert.equal(past.items[0].title, 'A');
+  assert.equal(past.character_event.title, '特稿甲');
+  assert.equal(past.world_dismissed, false);
+
+  // 今天期同样可按日期取（回看口径一致）；非法日期与未知日期安全返回 null
+  assert.equal(svc.getNewspaperByDate('2026-09-29').edition, 2);
+  assert.equal(svc.getNewspaperByDate('not-a-date'), null);
+  assert.equal(svc.getNewspaperByDate('1999-01-01'), null);
+
+  db.prepare('DELETE FROM town_newspapers').run();
+});

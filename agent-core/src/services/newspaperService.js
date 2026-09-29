@@ -54,13 +54,9 @@ export function getTodayNewspaper() {
   return db.prepare('SELECT * FROM town_newspapers WHERE publish_date = ?').get(getLocalDateKey()) || null;
 }
 
-/** 前端用：今天的报纸（绑定角色补充头像/名字），没有则 null */
-export function getTodayNewspaperForFrontend() {
-  const row = getTodayNewspaper();
-  if (!row) return null;
-  const character = row.character_id
-    ? dbCharacterBrief(row.character_id)
-    : null;
+/** 报纸行 → 前端结构（绑定角色补充头像/名字；today 与历史回看共用） */
+function mapPaperRowForFrontend(row) {
+  const character = row.character_id ? dbCharacterBrief(row.character_id) : null;
   return {
     id: row.id,
     publish_date: row.publish_date,
@@ -72,6 +68,36 @@ export function getTodayNewspaperForFrontend() {
     world_dismissed: Boolean(row.world_dismissed),
     character: character ? { id: character.id, display_name: character.display_name, avatar_path: character.avatar_path } : null,
   };
+}
+
+/** 前端用：今天的报纸，没有则 null */
+export function getTodayNewspaperForFrontend() {
+  const row = getTodayNewspaper();
+  return row ? mapPaperRowForFrontend(row) : null;
+}
+
+/** 前端用：历史期简目（最新在前；只给导航要用的轻量字段） */
+export function listNewspaperEditions() {
+  const rows = getDb().prepare(`
+    SELECT id, publish_date, name, edition, items_json, character_event_json
+    FROM town_newspapers
+    ORDER BY publish_date DESC, edition DESC
+  `).all();
+  return rows.map(row => ({
+    id: row.id,
+    publish_date: row.publish_date,
+    name: row.name || NEWSPAPER_NAME,
+    edition: row.edition,
+    item_count: (safeParseJson(row.items_json) || []).length,
+    featured_title: safeParseJson(row.character_event_json)?.title || null,
+  }));
+}
+
+/** 前端用：按日期回看某一期（含今天；没有该日期则 null） */
+export function getNewspaperByDate(dateKey) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateKey || ''))) return null;
+  const row = getDb().prepare('SELECT * FROM town_newspapers WHERE publish_date = ?').get(dateKey);
+  return row ? mapPaperRowForFrontend(row) : null;
 }
 
 /**

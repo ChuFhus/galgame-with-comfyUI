@@ -25,12 +25,19 @@
       </div>
     </Transition>
   </main>
+  <Transition name="scrim-fade">
+    <div v-if="isMobile && mobileSidebarOpen" class="mobile-scrim" @click="mobileSidebarOpen = false"></div>
+  </Transition>
+  <Sidebar v-if="sidebarReady && isMobile" :is-mobile="true" :mobile-open="mobileSidebarOpen" @char-selected="mobileSidebarOpen = false" />
   <Toast ref="displayToast" />
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import Toast from '../components/Toast.vue'
+import Sidebar from '../components/Sidebar.vue'
+import { useChatStore } from '../stores/chat.js'
+import { createMobileSidebarBackHandler } from '../utils/mobileSidebarBack.js'
 import { getStandingDisplayState } from '../api/index.js'
 import { standingGeometry } from '../utils/standingGeometry.js'
 import { onEvent, startUnifiedStream, stopUnifiedStream } from '../stores/unifiedStream.js'
@@ -39,6 +46,19 @@ const size = ref({ width: window.innerWidth, height: window.innerHeight })
 let latest = null, loadVersion = 0, observer
 const originalTitle = document.title
 const displayToast = ref(null)
+const mobileSidebarOpen = ref(false), sidebarReady = ref(false)
+const isDesktopWindow = new URLSearchParams(window.location.hash.split('?')[1]).get('desktop') === '1'
+const isMobile = computed(() => !isDesktopWindow && size.value.width <= 767)
+const chat = useChatStore()
+const handleAndroidBack = createMobileSidebarBackHandler({
+  isMobile: () => isMobile.value,
+  isOpen: () => mobileSidebarOpen.value,
+  open: () => {
+    sidebarReady.value = true
+    mobileSidebarOpen.value = true
+    chat.loadCharacters().catch(() => displayToast.value?.show('角色列表加载失败，请稍后重试', 'error'))
+  },
+})
 const geometry = computed(() => standingGeometry(shown.value.bounds, size.value.width, size.value.height))
 function updateBubble(reason) {
   bubble.value = reason?.text?.trim() ? reason : null
@@ -61,6 +81,7 @@ async function sync() { try { await apply(await getStandingDisplayState()) } cat
 function visibility() { hidden.value = document.hidden; if (!hidden.value) sync() }
 const offs = [onEvent('standing_display_state', apply), onEvent('connected', sync)]
 onMounted(() => {
+  if (!isDesktopWindow) window.__linsheHandleAndroidBack = handleAndroidBack
   if (new URLSearchParams(window.location.hash.split('?')[1]).get('desktop') === '1') {
     document.title = '用手机查看效果更佳~'
     displayToast.value?.show('用手机查看效果更佳~', 'info', 3000)
@@ -72,6 +93,7 @@ onMounted(() => {
   startUnifiedStream(); sync()
 })
 onBeforeUnmount(() => {
+  if (window.__linsheHandleAndroidBack === handleAndroidBack) delete window.__linsheHandleAndroidBack
   document.title = originalTitle
   loadVersion++; observer?.disconnect(); offs.forEach(fn => fn()); stopUnifiedStream()
   document.removeEventListener('visibilitychange', visibility)

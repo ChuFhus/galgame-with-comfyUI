@@ -8,7 +8,24 @@
     @close="emit('close')"
   >
     <template #header-extra>
-      <span v-if="paper" class="np-header-meta">第{{ paper.edition }}期 · {{ formatDate(paper.publish_date) }}</span>
+      <span v-if="editions.length" class="np-edition-nav">
+        <linshe-button
+          variant="icon"
+          size="sm"
+          title="上一期（更早）"
+          :disabled="!canNavOlder || navLoading"
+          @click="navEdition(1)"
+        >‹</linshe-button>
+        <span class="np-header-meta">{{ headerMeta || '今天的报纸还没印好' }}</span>
+        <linshe-button
+          variant="icon"
+          size="sm"
+          title="下一期（更新）"
+          :disabled="!newerTarget || navLoading"
+          @click="navEdition(-1)"
+        >›</linshe-button>
+      </span>
+      <span v-else-if="paper" class="np-header-meta">第{{ paper.edition }}期 · {{ formatDate(paper.publish_date) }}</span>
     </template>
 
     <!-- 加载骨架 -->
@@ -27,7 +44,7 @@
     </div>
 
     <!-- 报纸版面：一整版铺满窗口，内容压在一页内 -->
-    <article v-else class="np-paper">
+    <article v-else class="np-paper" :class="{ 'is-past-view': !isToday }">
       <!-- 报头 -->
       <header class="np-masthead">
         <div class="np-mast-row">
@@ -41,6 +58,24 @@
           <span>{{ NEWSPAPER_TAGLINE }}</span>
           <span class="np-dateline-end">头版 · 共 {{ totalCount }} 条</span>
         </div>
+        <!-- 期号切换条：目标期信息直接写在按钮上，一眼可点 -->
+        <nav v-if="editions.length" class="np-edition-switch" aria-label="切换期号">
+          <linshe-button
+            variant="chip"
+            size="sm"
+            title="查看更早的一期"
+            :disabled="!olderTarget || navLoading"
+            @click="navEdition(1)"
+          >‹ 上一期<span v-if="olderTarget && !olderTarget.today" class="np-ed-switch-target"> · {{ editionShortLabel(olderTarget) }}</span></linshe-button>
+          <span class="np-edition-current">{{ currentLabel }}</span>
+          <linshe-button
+            variant="chip"
+            size="sm"
+            title="查看更新的一期"
+            :disabled="!newerTarget || navLoading"
+            @click="navEdition(-1)"
+          >下一期<span v-if="newerTarget" class="np-ed-switch-target"> · {{ newerTarget.today ? '今天' : editionShortLabel(newerTarget) }}</span> ›</linshe-button>
+        </nav>
       </header>
 
       <!-- 版面：三栏（左 = 异闻+前半新闻 / 中 = 人物特稿 / 右 = 后半新闻） -->
@@ -80,7 +115,7 @@
               <figure v-if="item.image" class="np-figure np-figure-wrap">
                 <img :src="item.image" :alt="item.title" loading="lazy" />
               </figure>
-              <div v-else class="np-img-placeholder np-figure-wrap">配图印刷中…</div>
+              <div v-else class="np-img-placeholder np-figure-wrap">{{ isToday ? '配图印刷中…' : '本期配图缺失' }}</div>
               <p :class="['np-text', 'np-text-sm', item.image ? 'np-clamp-6' : 'np-clamp-4']">{{ item.content }}</p>
             </section>
           </div>
@@ -106,7 +141,7 @@
             <figure v-if="paper.character_event.image" class="np-figure np-lead-figure">
               <img :src="paper.character_event.image" :alt="paper.character_event.title" loading="lazy" />
             </figure>
-            <div v-else class="np-img-placeholder np-lead-figure">配图印刷中…</div>
+            <div v-else class="np-img-placeholder np-lead-figure">{{ isToday ? '配图印刷中…' : '本期配图缺失' }}</div>
             <p class="np-text np-lead-text np-clamp-5">{{ paper.character_event.content }}</p>
           </article>
         </div>
@@ -127,7 +162,7 @@
               <figure v-if="item.image" class="np-figure np-figure-wrap">
                 <img :src="item.image" :alt="item.title" loading="lazy" />
               </figure>
-              <div v-else class="np-img-placeholder np-figure-wrap">配图印刷中…</div>
+              <div v-else class="np-img-placeholder np-figure-wrap">{{ isToday ? '配图印刷中…' : '本期配图缺失' }}</div>
               <p :class="['np-text', 'np-text-sm', item.image ? 'np-clamp-6' : 'np-clamp-4']">{{ item.content }}</p>
             </section>
           </div>
@@ -154,9 +189,9 @@
                 @click="closeDetail"
                 @keydown.enter="closeDetail"
               >‹ 返回头版</span>
-              <!-- 世界异闻专有：开关今天的影响（消除后异闻文本保留在版面上，但不再影响任何角色） -->
+              <!-- 世界异闻专有：开关今天的影响（消除后异闻文本保留在版面上，但不再影响任何角色）；历史期只读 -->
               <linshe-button
-                v-if="detailArticle.kind === 'world' && paper.world_state"
+                v-if="isToday && detailArticle.kind === 'world' && paper.world_state"
                 class="np-dismiss-btn"
                 size="sm"
                 :variant="worldDismissed ? 'secondary' : 'danger'"
@@ -174,7 +209,7 @@
               <img :src="detailArticle.image" :alt="detailArticle.title" />
               <figcaption class="np-detail-caption">▲ 本报插画 · 点击放大</figcaption>
             </figure>
-            <div v-else class="np-img-placeholder np-detail-nofimg">配图印刷中…</div>
+            <div v-else class="np-img-placeholder np-detail-nofimg">{{ isToday ? '配图印刷中…' : '本期配图缺失' }}</div>
             <p class="np-detail-text">{{ detailArticle.content }}</p>
           </div>
         </div>
@@ -219,7 +254,11 @@ const visible = computed({
   set: (v) => emit('update:modelValue', v),
 })
 
-const paper = ref(null)
+const todayPaper = ref(null)
+const pastPaper = ref(null)
+const viewDate = ref('')          // '' = 看今天；否则为历史日期（YYYY-MM-DD）
+const editions = ref([])          // 历史期简目，最新在前
+const navLoading = ref(false)
 const loading = ref(false)
 const urging = ref(false)
 const dismissing = ref(false)
@@ -227,16 +266,86 @@ const detail = ref(null)   // { kind: 'lead' | 'world' } | { kind: 'item', index
 const zoomSrc = ref('')
 let pollTimer = null
 
+// 模板统一用 paper：看今天时是今天报，回看时是历史期
+const paper = computed(() => (viewDate.value ? pastPaper.value : todayPaper.value))
+const isToday = computed(() => !viewDate.value)
+
+// 期号导航：今天的报纸不占导航位（视作 -1 位）；列表最新在前
+const viewIndex = computed(() =>
+  viewDate.value ? editions.value.findIndex(e => e.publish_date === viewDate.value) : -1)
+
+/** 相邻目标期：dir=1 更旧 / dir=-1 更新；返回 { today: true } 表示目标是今天，null 表示没有 */
+function adjacentEdition(dir) {
+  if (!editions.value.length) return null
+  const idx = (isToday.value ? -1 : viewIndex.value) + dir
+  if (idx < -1) return null           // 今天再往新没有下一期
+  if (idx === -1) return { today: true } // 从历史期往新走，越过最新一期即回到今天
+  if (idx >= editions.value.length) return null
+  // 从今天往旧走时跳过列表里的"今天"位（今天的报纸不占导航拍）
+  let i = idx
+  while (dir > 0 && todayPaper.value && editions.value[i]?.publish_date === todayPaper.value.publish_date) {
+    i++
+    if (i >= editions.value.length) return null
+  }
+  const e = editions.value[i]
+  if (!e) return null
+  return todayPaper.value && e.publish_date === todayPaper.value.publish_date ? { today: true } : e
+}
+
+const olderTarget = computed(() => adjacentEdition(1))
+const newerTarget = computed(() => adjacentEdition(-1))
+const canNavOlder = computed(() => !!olderTarget.value)
+
+function editionShortLabel(e) {
+  if (!e) return ''
+  const d = new Date(`${e.publish_date}T00:00:00`)
+  const dateStr = Number.isNaN(d.getTime()) ? e.publish_date : `${d.getMonth() + 1}月${d.getDate()}日`
+  return `第${e.edition}期 · ${dateStr}`
+}
+const currentLabel = computed(() => {
+  const p = paper.value
+  if (!p) return ''
+  return `第${p.edition}期 · ${isToday.value ? '今天' : formatDate(p.publish_date)}`
+})
+const headerMeta = computed(() => {
+  const p = paper.value
+  return p ? `第${p.edition}期 · ${formatDate(p.publish_date)}` : ''
+})
+
+/** 期号导航：dir=1 更旧，dir=-1 更新（越过最新一期即回到今天） */
+async function navEdition(dir) {
+  if (navLoading.value) return
+  const target = dir > 0 ? olderTarget.value : newerTarget.value
+  if (!target) return
+  // 目标是今天 → 切回今天视图（沿用活角色链接与轮询）
+  if (target.today) {
+    viewDate.value = ''
+    pastPaper.value = null
+    closeDetail()
+    return
+  }
+  navLoading.value = true
+  try {
+    const data = await api.getNewspaperByDate(target.publish_date)
+    pastPaper.value = data?.newspaper || null
+    viewDate.value = data?.newspaper ? target.publish_date : ''
+    closeDetail()
+  } catch { /* 导航失败留在当前期 */ }
+  finally {
+    navLoading.value = false
+  }
+}
+
 // 今天的世界影响是否已被读者手动消除（消除后异闻文本仍在版面上，但不再影响角色）
 const worldDismissed = computed(() => Boolean(paper.value?.world_dismissed))
 
 async function dismissWorld() {
-  if (dismissing.value) return
+  if (dismissing.value || !isToday.value) return
   dismissing.value = true
   try {
     const data = await api.dismissNewspaperWorldState(!worldDismissed.value)
-    if (data?.newspaper) paper.value = data.newspaper
-    else paper.value = { ...paper.value, world_dismissed: !worldDismissed.value }
+    if (data?.newspaper) todayPaper.value = data.newspaper
+    else todayPaper.value = { ...todayPaper.value, world_dismissed: !worldDismissed.value }
   } catch (err) {
     console.error('[NewspaperModal] toggle world state failed:', err)
   } finally {
@@ -319,15 +428,22 @@ function hasMissingImage(p) {
 
 async function fetchPaper() {
   const data = await api.getTodayNewspaper()
-  paper.value = data?.newspaper || null
+  todayPaper.value = data?.newspaper || null
   schedulePoll()
+}
+
+async function fetchEditions() {
+  try {
+    const data = await api.listNewspaperEditions()
+    editions.value = data?.editions || []
+  } catch { /* 期列表失败不阻塞今天的报纸 */ }
 }
 
 function schedulePoll() {
   clearInterval(pollTimer)
   pollTimer = null
-  // 配图是生成完一张落一张的，开窗期间有缺图就轻轮询补齐
-  if (visible.value && hasMissingImage(paper.value)) {
+  // 配图是生成完一张落一张的，开窗期间有缺图就轻轮询补齐（只针对今天：往期配图不再补印）
+  if (visible.value && hasMissingImage(todayPaper.value)) {
     pollTimer = setInterval(async () => {
       try { await fetchPaper() } catch { /* 轮询失败静默，下个周期再试 */ }
     }, POLL_INTERVAL_MS)
@@ -349,13 +465,16 @@ async function urgePrint() {
 watch(visible, async (open) => {
   if (open) {
     loading.value = true
+    viewDate.value = ''
+    pastPaper.value = null
     try {
       await fetchPaper()
-      if (paper.value) emit('read', paper.value)
+      if (todayPaper.value) emit('read', todayPaper.value)
     } catch { /* 打开失败时停在空态 */ }
     finally {
       loading.value = false
     }
+    fetchEditions()
   } else {
     clearInterval(pollTimer)
     pollTimer = null
@@ -389,6 +508,43 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
+}
+
+/* ── 期号导航（header-extra）：‹ 期号 · 日期 › ── */
+.np-edition-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.np-edition-nav .np-header-meta {
+  min-width: 148px;
+  text-align: center;
+}
+/* 报头右侧的「第 N 期」随导航联动时弱化（避免与 header 重复） */
+.np-paper.is-past-view .np-mast-side-right {
+  opacity: 0.55;
+}
+
+/* ── 期号切换条（报头下）：上一期 ← 当前 → 下一期 ── */
+.np-edition-switch {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(58, 42, 26, 0.18);
+}
+.np-edition-current {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: #8c3b22;
+  white-space: nowrap;
+}
+.np-ed-switch-target {
+  opacity: 0.75;
+  font-weight: 400;
 }
 
 /* ── 报头 ── */
@@ -903,6 +1059,14 @@ onBeforeUnmount(() => {
 @media (max-width: 767px) {
   .np-paper {
     padding: 14px 16px 12px;
+  }
+  /* 期号切换条：窄屏允许换行、隐藏目标期日期，避免横向溢出 */
+  .np-edition-switch {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .np-ed-switch-target {
+    display: none;
   }
   .np-mast-side {
     display: none;

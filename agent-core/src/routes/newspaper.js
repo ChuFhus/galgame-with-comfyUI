@@ -1,11 +1,27 @@
 import { Router } from 'express';
-import { getTodayNewspaperForFrontend, maybeGenerateDailyNewspaper, setWorldStateDismissed } from '../services/newspaperService.js';
+import {
+  getTodayNewspaperForFrontend,
+  maybeGenerateDailyNewspaper,
+  setWorldStateDismissed,
+  listNewspaperEditions,
+  getNewspaperByDate,
+} from '../services/newspaperService.js';
 
 const router = Router();
 
 // GET /api/newspaper/today — 今天的《邻舍日报》（没有则 { newspaper: null }）
 router.get('/today', (req, res) => {
   res.json({ newspaper: getTodayNewspaperForFrontend() });
+});
+
+// GET /api/newspaper/editions — 历史期简目（最新在前，供期号导航）
+router.get('/editions', (req, res) => {
+  res.json({ editions: listNewspaperEditions() });
+});
+
+// GET /api/newspaper/by-date/:date — 按日期回看某一期（YYYY-MM-DD）
+router.get('/by-date/:date', (req, res) => {
+  res.json({ newspaper: getNewspaperByDate(req.params.date) });
 });
 
 // POST /api/newspaper/generate — 手动补发今天的报纸（已存在则直接返回现有内容）

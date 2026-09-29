@@ -1275,6 +1275,16 @@ export async function getTodayNewspaper() {
   return request(`/newspaper/today`)
 }
 
+// 历史期简目（最新在前，供期号导航）
+export async function listNewspaperEditions() {
+  return request(`/newspaper/editions`)
+}
+
+// 按日期回看某一期
+export async function getNewspaperByDate(date) {
+  return request(`/newspaper/by-date/${date}`)
+}
+
 export async function generateNewspaper() {
   return request(`/newspaper/generate`, { method: 'POST' })
 }

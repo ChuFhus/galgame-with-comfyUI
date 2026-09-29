@@ -41,6 +41,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, provide, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { createMobileSidebarBackHandler } from './utils/mobileSidebarBack.js'
 import { useChatStore } from './stores/chat.js'
 import { useSettingsStore } from './stores/settings.js'
 import { useProactiveStore } from './stores/notifications.js'
@@ -186,11 +187,11 @@ function closeMobileSidebar() {
   mobileSidebarOpen.value = false
 }
 
-function handleAndroidBack() {
-  if (!isMobile.value || mobileSidebarOpen.value) return false
-  mobileSidebarOpen.value = true
-  return true
-}
+const handleAndroidBack = createMobileSidebarBackHandler({
+  isMobile: () => isMobile.value,
+  isOpen: () => mobileSidebarOpen.value,
+  open: () => { mobileSidebarOpen.value = true },
+})
 
 provide('isMobile', isMobile)
 provide('toggleMobileSidebar', toggleMobileSidebar)
