@@ -77,7 +77,7 @@
             <div class="hiresfix-copy">
               <div class="hiresfix-desc">图片进一步高清细化设置</div>
             </div>
-            <span class="hiresfix-summary">最长边 {{ hiresMaxSize }} · {{ hiresSteps }} 步 · 重绘 {{ hiresDenoise }} · CFG {{ hiresCfg }}{{ hiresLoraCount > 0 ? ` · LoRA ${hiresLoraCount}` : '' }}</span>
+            <span class="hiresfix-summary">{{ hiresWorkflowMode === 'advanced' ? '进阶版' : '基础版' }} · 最长边 {{ hiresMaxSize }} · {{ hiresWorkflowMode === 'advanced' && hiresSamplingMode === 'source' ? '采样跟随原图' : `${hiresSteps} 步 · CFG ${hiresCfg}` }} · 重绘 {{ hiresDenoise }}{{ hiresLoraCount > 0 ? ` · LoRA ${hiresLoraCount}` : '' }}</span>
             <linshe-button class="hiresfix-link" variant="link" @click="openHiresFixSettings">设置 →</linshe-button>
           </div>
         </div>
@@ -113,7 +113,7 @@
       </div>
 
       <GlobalLoraModal v-model="globalLoraModalVisible" :initial-loras="globalLoras" @saved="onGlobalLoraSaved" />
-      <HiresFixModal v-if="imageProvider !== 'novelai'" v-model="hiresFixModalVisible" :initial-loras="hiresLoras" :initial-steps="hiresSteps" :initial-cfg="hiresCfg" :initial-denoise="hiresDenoise" :initial-max-size="hiresMaxSize" :initial-artist-mode="hiresArtistMode" :initial-artist="hiresArtist" @saved="onHiresFixSaved" />
+      <HiresFixModal v-if="imageProvider !== 'novelai'" v-model="hiresFixModalVisible" :initial-sampling-mode="hiresSamplingMode" :initial-global-lora-scale="hiresGlobalLoraScale" :initial-source-blend="hiresSourceBlend" :initial-upscale-model="hiresUpscaleModel" :initial-workflow-mode="hiresWorkflowMode" :initial-loras="hiresLoras" :initial-steps="hiresSteps" :initial-cfg="hiresCfg" :initial-denoise="hiresDenoise" :initial-max-size="hiresMaxSize" :initial-artist-mode="hiresArtistMode" :initial-artist="hiresArtist" @saved="onHiresFixSaved" />
 
 
       <!-- 测试画风：自由画面描述（LLM 完善提示词）或固定提示词测试 -->
@@ -1195,10 +1195,15 @@ const globalLoras = ref([])
 const globalLoraModalVisible = ref(false)
 const hiresFixModalVisible = ref(false)
 const globalLoraCount = computed(() => (globalLoras.value || []).filter(l => l.path && l.enabled !== false).length)
+const hiresSamplingMode = ref('source')
+const hiresGlobalLoraScale = ref(1)
+const hiresSourceBlend = ref(0)
+const hiresWorkflowMode = ref('basic')
+const hiresUpscaleModel = ref('RealESRGAN_x4plus_anime_6B.pth')
 const hiresLoras = ref([])
 const hiresSteps = ref(35)
 const hiresCfg = ref(5)
-const hiresDenoise = ref(0.35)
+const hiresDenoise = ref(0.2)
 const hiresMaxSize = ref(2000)
 const hiresArtistMode = ref('empty')
 const hiresArtist = ref('')
@@ -1853,10 +1858,15 @@ onMounted(async () => {
       eventHeight: data.comfy.eventHeight || 1200,
     }
     globalLoras.value = data.comfy.globalLora || []
+    hiresSamplingMode.value = data.comfy.hiresSamplingMode ?? 'source'
+    hiresGlobalLoraScale.value = data.comfy.hiresGlobalLoraScale ?? 1
+    hiresSourceBlend.value = data.comfy.hiresSourceBlend ?? 0
+    hiresWorkflowMode.value = data.comfy.hiresWorkflowMode === 'advanced' ? 'advanced' : 'basic'
+    hiresUpscaleModel.value = data.comfy.hiresUpscaleModel ?? 'RealESRGAN_x4plus_anime_6B.pth'
     hiresLoras.value = data.comfy.hiresLora || []
     hiresSteps.value = data.comfy.hiresSteps ?? 35
     hiresCfg.value = data.comfy.hiresCfg ?? 5
-    hiresDenoise.value = data.comfy.hiresDenoise ?? 0.35
+    hiresDenoise.value = data.comfy.hiresDenoise ?? 0.2
     hiresMaxSize.value = data.comfy.hiresMaxSize ?? 2000
     hiresArtistMode.value = data.comfy.hiresArtistMode ?? 'empty'
     hiresArtist.value = data.comfy.hiresArtist ?? ''
@@ -1968,7 +1978,12 @@ function onGlobalLoraSaved(globalList) {
   if (Array.isArray(globalList)) globalLoras.value = globalList
 }
 
-function onHiresFixSaved({ loras, steps, cfg, denoise, maxSize, artistMode, artist }) {
+function onHiresFixSaved({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode }) {
+  if (samplingMode !== undefined) hiresSamplingMode.value = samplingMode
+  if (globalLoraScale !== undefined) hiresGlobalLoraScale.value = globalLoraScale
+  if (sourceBlend !== undefined) hiresSourceBlend.value = sourceBlend
+  if (workflowMode !== undefined) hiresWorkflowMode.value = workflowMode
+  if (upscaleModel !== undefined) hiresUpscaleModel.value = upscaleModel
   if (Array.isArray(loras)) hiresLoras.value = loras
   if (steps !== undefined) hiresSteps.value = steps
   if (cfg !== undefined) hiresCfg.value = cfg

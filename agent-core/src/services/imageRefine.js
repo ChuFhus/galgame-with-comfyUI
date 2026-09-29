@@ -3,11 +3,13 @@
  *
  * 流程:
  *   1. 读取原图文件 → 透明背景（抠过图的人像）先垫白成不透明图 → 上传到 ComfyUI input 目录
- *   2. 加载 workflow/放大细化工作流.json（仅 ComfyUI 官方节点，像素放大而非 latent 放大）:
- *      LoadImage → ImageScaleToMaxDimension(按长边像素放大，默认 lanczos/长边2000，不固定倍数)
- *      → VAEEncode → KSampler(图生图低重绘, 默认 35步/cfg5.0/denoise0.35) → VAEDecode → PreviewImage
+ *   2. 按 hiresWorkflowMode 选择基础/进阶文件（默认基础）:
+ *      基础：Lanczos → VAEEncode → KSampler → VAEDecode，全官方节点。
+ *      进阶（放大细化工作流-进阶.json）：
+ *      LoadImage → 可替换超分模型 → Lanczos 目标尺寸
+ *      → UltimateSDUpscaleNoUpscale(分块低重绘) → 可选原图融合（默认 0）→ PreviewImage
  *   3. 继承原图的模型加载器(UNET/CLIP/VAE)、负面提示词（系统参数非空时改为覆盖）、提示词链(画面描述/质量提示词/画师串/lora触发词)，
- *      以及与原图一致的 LoRA 链（全局画风 LoRA 按场景过滤 + 角色 LoRA），
+ *      以及 LoRA 链（全局画风 LoRA 按场景过滤并应用用户配置的倍率 + 角色 LoRA），
  *      再追加 HiresFix 细化专用 LoRA（设置页单独配置）到链尾
  *   4. 提交 ComfyUI → 下载结果 → 原子覆盖原文件（细化产物是不透明图，透明背景由调用方按常规流程抠白）
  *
@@ -15,9 +17,9 @@
  * （浏览器 canvas 导出的 PNG 尤其如此），不垫白就会被当成黑底一起重绘。所以上传前统一垫白，
  * 细化产物是不透明图；透明背景不在这一层还原，交给调用方的常规后处理去重新抠（小镇素材走素材管线）。
  *
- * KSampler 采样参数（步数/cfg/denoise/采样器）与放大长边以细化工作流文件为基础，
- * 步数/cfg/denoise 可被系统参数中的 HiresFix 设置覆盖；不从原图工作流继承（原图 denoise=1
- * 全重绘，步数/cfg 也按细化调优而非沿用生图值）。
+ * v3/v4/v5 默认跟随源工作流唯一 KSampler 的步数/CFG/采样器/调度器；重绘仍独立配置。
+ * 多采样器或缺失源参数时回退到 HiresFix 设置，不根据模型名或 LoRA 名猜测。
+ * 无 v3/v4/v5 标记的旧工作流继续使用原采样设置；权重倍率始终为显式用户配置。
  */
 
 import fs from 'fs';
@@ -27,7 +29,7 @@ import { submitWorkflow, uploadImage, apiToGui } from './comfyClient.js';
 import sharp from 'sharp';
 import { config } from '../config.js';
 import {
-  HIRES_WORKFLOW, ACTIVE_WORKFLOW, PRO_WORKFLOW, autoRestoreMissing,
+  HIRES_WORKFLOW, HIRES_ADVANCED_WORKFLOW, ACTIVE_WORKFLOW, PRO_WORKFLOW, autoRestoreMissing,
 } from './workflowTemplates.js';
 import { injectLoraNodes, NODE_TITLES, findNegativeEncodeNode } from './imageSkill.js';
 
@@ -36,7 +38,7 @@ const WORKFLOW_DIR = path.join(__dirname, '..', '..', '..', 'workflow');
 
 const PROMPT_PLACEHOLDER = '请输入画面描述';
 
-function hiresPath() { return path.join(WORKFLOW_DIR, HIRES_WORKFLOW); }
+function hiresPath() { return path.join(WORKFLOW_DIR, config.comfyui.hiresWorkflowMode === 'advanced' ? HIRES_ADVANCED_WORKFLOW : HIRES_WORKFLOW); }
 
 /** 与 imageSkill.resolveWorkflowPath 一致的模式兜底：无记录时按全局模式 + 场景映射 */
 function fallbackModeForScene(scene) {
@@ -92,6 +94,31 @@ export function buildHiresWorkflow(promptText, overrides = {}) {
     scene: workflowScene,
   });
   const src = srcResult.wf;
+  const profile = [3, 4, 5].includes(wf.extra?.linsheHires?.version) ? wf.extra.linsheHires : null;
+  if (profile?.version >= 4) {
+    const upscaleModel = config.comfyui.hiresUpscaleModel;
+    if (typeof upscaleModel === 'string' && !upscaleModel.trim()) {
+      // 显式选择普通插值：移除超分支路，避免未安装模型仍被校验/执行。
+      const removed = new Set([profile.upscaleModelNodeId, profile.upscaleImageNodeId, profile.upscaleResizeNodeId]);
+      const encodeLink = wf.links.find(l => l[3] === profile.encodeNodeId && l[4] === (profile.encodeInputSlot ?? 0));
+      encodeLink[1] = profile.sourceResizeNodeId;
+      wf.nodes = wf.nodes.filter(n => !removed.has(n.id));
+      wf.links = wf.links.filter(l => !removed.has(l[1]) && !removed.has(l[3]));
+      for (const node of wf.nodes) for (const [slot, output] of (node.outputs || []).entries()) {
+        output.links = wf.links.filter(l => l[1] === node.id && l[2] === slot).map(l => l[0]);
+      }
+    } else if (typeof upscaleModel === 'string') {
+      wf.nodes.find(n => n.id === profile.upscaleModelNodeId).widgets_values[0] = upscaleModel.trim();
+    }
+  }
+  const finite = (value, fallback) => typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  const globalLoraScale = Math.max(0, Math.min(2, finite(config.comfyui.hiresGlobalLoraScale, 1)));
+  const sourceSamplers = (src?.nodes || []).filter(n => n.type === 'KSampler');
+  const sourceSampling = sourceSamplers.length === 1 ? sourceSamplers[0].widgets_values : null;
+  const followSource = profile && config.comfyui.hiresSamplingMode !== 'custom'
+    && Array.isArray(sourceSampling) && Number.isFinite(sourceSampling[2])
+    && Number.isFinite(sourceSampling[3]) && typeof sourceSampling[4] === 'string'
+    && typeof sourceSampling[5] === 'string';
 
   const srcLoader = (type) => {
     if (!src) return null;
@@ -105,7 +132,7 @@ export function buildHiresWorkflow(promptText, overrides = {}) {
     return typeof text === 'string' ? text : null;
   })();
 
-  // LoRA 链合并（与原图生成时一致的全量继承 + 细化专用追加）：
+  // 全局 LoRA 应用显式倍率；角色和细化专用配置保持原权重及覆盖优先级。
   //   全局画风 LoRA(按场景过滤) → 角色 LoRA → HiresFix细化LoRA(追加在链尾)
   //   同 path 后者覆盖前者（细化配置的权重优先，并移至链尾位置）
   const currentScene = overrides.scene;
@@ -121,12 +148,14 @@ export function buildHiresWorkflow(promptText, overrides = {}) {
     l => l.path && typeof l.path === 'string' && l.enabled !== false
   );
   const loraChain = new Map();
-  for (const l of [...globalLoras, ...charLoras, ...hiresLoras]) {
+  for (const l of [...globalLoras.map(l => ({ ...l, weight: (l.weight ?? 0.6) * globalLoraScale })), ...charLoras, ...hiresLoras]) {
     loraChain.delete(l.path);
     loraChain.set(l.path, l);
   }
   const loras = [...loraChain.values()];
-  const hasLoras = loras.length > 0;
+  // 零权重在合并后移除：同时移除独立触发词，也允许专用配置覆盖全局禁用。
+  const activeLoras = loras.filter(l => (l.weight ?? 0.6) !== 0);
+  const hasLoras = activeLoras.length > 0;
   if (globalLoras.length || charLoras.length || hiresLoras.length) {
     console.log(`[imageRefine] LoRA chain: ${globalLoras.length} global + ${charLoras.length} char + ${hiresLoras.length} hires → ${loras.length} after dedup`);
   }
@@ -160,14 +189,22 @@ export function buildHiresWorkflow(promptText, overrides = {}) {
       continue;
     }
 
-    // KSampler: 种子随机；步数/cfg/denoise 使用系统参数中的 HiresFix 设置（不继承原图）
-    if (node.type === 'KSampler') {
+    // denoise 独立设置；其余采样参数按用户选择跟随源工作流或使用细化配置。
+    if (node.type === 'KSampler' || node.type === 'UltimateSDUpscaleNoUpscale') {
       if (node.widgets_values[1] === 'randomize') {
         node.widgets_values[0] = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
       }
       node.widgets_values[2] = config.comfyui.hiresSteps ?? 35;
       node.widgets_values[3] = config.comfyui.hiresCfg ?? 5.0;
-      node.widgets_values[6] = config.comfyui.hiresDenoise ?? 0.35;
+      node.widgets_values[6] = config.comfyui.hiresDenoise ?? 0.2;
+      if (followSource) {
+        node.widgets_values.splice(2, 4, ...sourceSampling.slice(2, 6));
+      }
+      continue;
+    }
+
+    if (profile && node.id === profile.sourceBlendNodeId && node.type === 'ImageBlend') {
+      node.widgets_values[0] = Math.max(0, Math.min(1, finite(config.comfyui.hiresSourceBlend, 0)));
       continue;
     }
 
@@ -186,9 +223,9 @@ export function buildHiresWorkflow(promptText, overrides = {}) {
     }
 
     // lora触发词节点：注入所有 lora 的 triggerWord 拼接
-    if (node.title === NODE_TITLES.loraTrigger && hasLoras) {
-      const triggerWords = loras.map(l => l.triggerWord || '').filter(Boolean).join(', ');
-      if (triggerWords) node.widgets_values[0] = triggerWords;
+    if (node.title === NODE_TITLES.loraTrigger) {
+      const triggerWords = activeLoras.map(l => l.triggerWord || '').filter(Boolean).join(', ');
+      node.widgets_values[0] = triggerWords;
       continue;
     }
 
@@ -212,11 +249,11 @@ export function buildHiresWorkflow(promptText, overrides = {}) {
   }
 
   // 与原图一致的 LoRA 链: UNETLoader → Lora1 → ... → KSampler
-  if (hasLoras) injectLoraNodes(wf, loras);
+  if (hasLoras) injectLoraNodes(wf, activeLoras);
 
   const srcLabel = overrides.customWorkflow
     || (srcResult.resolvedMode === 'base' ? PRO_WORKFLOW : ACTIVE_WORKFLOW);
-  console.log(`[imageRefine] Hires workflow built: ${HIRES_WORKFLOW}${src ? ` (params inherited from ${srcLabel})` : ' (source workflow unavailable, template defaults)'}`);
+  console.log(`[imageRefine] Hires workflow built: ${path.basename(hiresPath())}${src ? ` (params inherited from ${srcLabel})` : ' (source workflow unavailable, template defaults)'}`);
   return { wf, wfPath: hiresPath() };
 }
 

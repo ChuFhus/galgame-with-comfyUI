@@ -125,6 +125,7 @@ const OUTPUT_DEFS_FALLBACK = {
   'VAEEncode':                  [{ name: 'LATENT' }],
   'VAEEncodeForInpaint':        [{ name: 'LATENT' }],
   'KSampler':                   [{ name: 'LATENT' }],
+  'UltimateSDUpscaleNoUpscale': [{ name: 'IMAGE' }],
   'KSamplerAdvanced':           [{ name: 'LATENT' }],
   'EmptyLatentImage':           [{ name: 'LATENT' }],
   'CLIPTextEncode':             [{ name: 'CONDITIONING' }],
@@ -211,7 +212,7 @@ export function apiToGui(api) {
         // Widget 值
         guiInputs.push({ name, type: 'STRING', widget: { name } });
 
-        if (class_type === 'KSampler' && name === 'seed') {
+        if (['KSampler', 'UltimateSDUpscaleNoUpscale'].includes(class_type) && name === 'seed') {
           // KSampler seed 在 GUI 中占两个 slot：[seed, controlMode]
           widgetsValues.push(value);
           widgetsValues.push('fixed');
@@ -306,12 +307,12 @@ export function guiToApi(workflow) {
 
         if (inp.widget) {
           wvIdx++;
-          if ((node.type === 'KSampler' || node.type === 'OpenAICompatibleLoader') && inp.name === 'seed') {
+          if (['KSampler', 'UltimateSDUpscaleNoUpscale', 'OpenAICompatibleLoader'].includes(node.type) && inp.name === 'seed') {
             wvIdx++;
           }
         }
       } else if (inp.widget) {
-        if (node.type === 'KSampler' && inp.name === 'seed') {
+        if (['KSampler', 'UltimateSDUpscaleNoUpscale'].includes(node.type) && inp.name === 'seed') {
           apiNode.inputs[inp.name] = wvs[wvIdx];
           wvIdx += 2;
         } else if (node.type === 'OpenAICompatibleLoader' && inp.name === 'seed') {

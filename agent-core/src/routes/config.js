@@ -104,10 +104,15 @@ router.get('/', (req, res) => {
       negativePrompt: config.comfyui.negativePrompt ?? '',
       tlsVerify: config.comfyui.tlsVerify,
       globalLora: config.comfyui.globalLora || [],
+      hiresSamplingMode: config.comfyui.hiresSamplingMode,
+      hiresGlobalLoraScale: config.comfyui.hiresGlobalLoraScale,
+      hiresSourceBlend: config.comfyui.hiresSourceBlend,
+      hiresUpscaleModel: config.comfyui.hiresUpscaleModel,
+      hiresWorkflowMode: config.comfyui.hiresWorkflowMode,
       hiresLora: config.comfyui.hiresLora || [],
       hiresSteps: config.comfyui.hiresSteps ?? 35,
       hiresCfg: config.comfyui.hiresCfg ?? 5.0,
-      hiresDenoise: config.comfyui.hiresDenoise ?? 0.35,
+      hiresDenoise: config.comfyui.hiresDenoise ?? 0.2,
       hiresMaxSize: config.comfyui.hiresMaxSize ?? 2000,
       hiresArtistMode: config.comfyui.hiresArtistMode ?? 'empty',
       hiresArtist: config.comfyui.hiresArtist ?? '',
@@ -203,14 +208,19 @@ router.put('/hires-lora', (req, res) => {
 
 // PUT /api/config/hires — 更新 HiresFix 细化完整设置（LoRA + 步数/重绘幅度/CFG/最长边/画师串）
 router.put('/hires', (req, res) => {
-  const { loras, steps, cfg, denoise, maxSize, artistMode, artist } = req.body || {};
-  if (loras === undefined && steps === undefined && cfg === undefined && denoise === undefined && maxSize === undefined && artistMode === undefined && artist === undefined) {
+  const { loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode } = req.body || {};
+  if (loras === undefined && steps === undefined && cfg === undefined && denoise === undefined && maxSize === undefined && artistMode === undefined && artist === undefined && samplingMode === undefined && globalLoraScale === undefined && sourceBlend === undefined && upscaleModel === undefined && workflowMode === undefined) {
     return res.status(400).json({ error: 'at least one hires setting is required' });
   }
-  updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist });
+  updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode });
   res.json({
     ok: true,
     hiresLora: config.comfyui.hiresLora,
+    hiresSamplingMode: config.comfyui.hiresSamplingMode,
+    hiresGlobalLoraScale: config.comfyui.hiresGlobalLoraScale,
+    hiresSourceBlend: config.comfyui.hiresSourceBlend,
+    hiresUpscaleModel: config.comfyui.hiresUpscaleModel,
+    hiresWorkflowMode: config.comfyui.hiresWorkflowMode,
     hiresSteps: config.comfyui.hiresSteps,
     hiresCfg: config.comfyui.hiresCfg,
     hiresDenoise: config.comfyui.hiresDenoise,

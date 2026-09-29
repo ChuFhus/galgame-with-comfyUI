@@ -376,7 +376,7 @@ function buildWorkflow(promptText, overrides = {}) {
  */
 export function injectLoraNodes(wf, loras) {
   const unetNode = wf.nodes.find(n => n.type === 'UNETLoader');
-  const samplerNode = wf.nodes.find(n => n.type === 'KSampler');
+  const samplerNode = wf.nodes.find(n => n.type === 'KSampler' || n.type === 'UltimateSDUpscaleNoUpscale');
 
   if (!unetNode || !samplerNode) {
     console.warn('[imageSkill] Cannot inject lora nodes: UNETLoader or KSampler not found in workflow');
@@ -460,6 +460,12 @@ export function injectLoraNodes(wf, loras) {
     // 上游来源：UNETLoader(第一个lora) 或 上一个 lora 节点
     const sourceNodeId = i === 0 ? unetNode.id : loraNodeIds[i - 1];
     wf.links.push([inputLinkId, sourceNodeId, 0, nodeId, 0, 'MODEL']);
+    // GUI socket 元数据必须与 links 一致，否则导出回 ComfyUI 后 LoRA 链会显示断线。
+    if (i === 0) {
+      unetModelOutput.links = unetModelOutput.links.map(id => id === oldLinkId ? inputLinkId : id);
+    } else {
+      wf.nodes.find(n => n.id === sourceNodeId).outputs[0].links = [inputLinkId];
+    }
   }
 
   // 最后一个 lora → 原始下游节点（保留用户中间链路）

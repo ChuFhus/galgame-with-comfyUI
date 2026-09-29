@@ -86,9 +86,14 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
     tlsVerify: process.env.COMFYUI_TLS_VERIFY !== 'false',
     globalLora: [],
     hiresLora: [],   // HiresFix 放大细化专用 LoRA（仅注入细化工作流，追加在 LoRA 链末尾）
+    hiresWorkflowMode: 'basic', // basic 官方节点原版；advanced 超分 + 分块细化
+    hiresUpscaleModel: 'RealESRGAN_x4plus_anime_6B.pth', // 留空使用 Lanczos；可换任意兼容超分模型
+    hiresSamplingMode: 'source', // source 跟随源采样器；custom 使用细化设置
+    hiresGlobalLoraScale: 1, // 不推测全局 LoRA 用途，默认完整保留
+    hiresSourceBlend: 0, // 解码后融合原图插值的比例
     hiresSteps: 35,  // HiresFix 细化步数
     hiresCfg: 5.0,   // HiresFix 细化 CFG
-    hiresDenoise: 0.35,  // HiresFix 细化重绘幅度
+    hiresDenoise: 0.2,  // HiresFix 细化重绘幅度
     hiresMaxSize: 2000,  // HiresFix 细化最长边像素
     hiresArtistMode: 'empty', // HiresFix 画师串: inherit沿用/empty留空/specified指定
     hiresArtist: '',     // HiresFix 指定模式下的画师串
@@ -370,7 +375,27 @@ export function updateGlobalLora(loras) {
  * 细化 LoRA 仅作用于放大细化工作流，追加在 LoRA 链末尾；
  * 与全局/角色 LoRA 同 path 时以细化配置的权重为准
  */
-export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist } = {}) {
+export function updateHiresSettings({ loras, steps, cfg, denoise, maxSize, artistMode, artist, samplingMode, globalLoraScale, sourceBlend, upscaleModel, workflowMode } = {}) {
+  if (['basic', 'advanced'].includes(workflowMode)) {
+    config.comfyui.hiresWorkflowMode = workflowMode;
+    persistSettingSync('comfy_hires_workflow_mode', workflowMode);
+  }
+  if (typeof upscaleModel === 'string') {
+    config.comfyui.hiresUpscaleModel = upscaleModel.trim();
+    persistSettingSync('comfy_hires_upscale_model', config.comfyui.hiresUpscaleModel);
+  }
+  if (['source', 'custom'].includes(samplingMode)) {
+    config.comfyui.hiresSamplingMode = samplingMode;
+    persistSettingSync('comfy_hires_sampling_mode', samplingMode);
+  }
+  for (const [value, key, storageKey, max] of [
+    [globalLoraScale, 'hiresGlobalLoraScale', 'comfy_hires_global_lora_scale', 2],
+    [sourceBlend, 'hiresSourceBlend', 'comfy_hires_source_blend', 1],
+  ]) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    config.comfyui[key] = Math.max(0, Math.min(max, value));
+    persistSettingSync(storageKey, String(config.comfyui[key]));
+  }
   if (loras !== undefined) {
     if (!Array.isArray(loras)) loras = [];
     const cleaned = loras.filter(l => l.path && typeof l.path === 'string').map(l => ({

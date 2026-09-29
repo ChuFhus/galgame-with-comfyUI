@@ -110,6 +110,11 @@ export const SETTING_TO_CONFIG = {
   user_persona:                    { obj: 'user',     key: 'persona',           type: 'string' },
   workflow_mode:                   { obj: 'workflow',key: 'mode',             type: 'string' },
   comfy_global_lora:              { obj: 'comfyui',  key: 'globalLora',       type: 'json' },
+  comfy_hires_workflow_mode: { obj: 'comfyui', key: 'hiresWorkflowMode', type: 'string' },
+  comfy_hires_upscale_model: { obj: 'comfyui', key: 'hiresUpscaleModel', type: 'string' },
+  comfy_hires_sampling_mode:      { obj: 'comfyui', key: 'hiresSamplingMode', type: 'string' },
+  comfy_hires_global_lora_scale:  { obj: 'comfyui', key: 'hiresGlobalLoraScale', type: 'float' },
+  comfy_hires_source_blend:       { obj: 'comfyui', key: 'hiresSourceBlend', type: 'float' },
   comfy_hires_lora:               { obj: 'comfyui',  key: 'hiresLora',        type: 'json' },
   comfy_hires_steps:              { obj: 'comfyui',  key: 'hiresSteps',       type: 'int'   },
   comfy_hires_cfg:                { obj: 'comfyui',  key: 'hiresCfg',         type: 'float' },
@@ -156,6 +161,11 @@ export function migrateGlobalLoraScenes(loras) {
 // 从 DB 读取 system_settings 覆盖 config 内存（DB 优先于代码默认值）
 export function loadSystemSettings(db) {
   const rows = db.prepare(`SELECT setting_key, setting_value FROM system_settings`).all();
+  // 老客户已经明确保存过采样参数时，升级不能静默改成“跟随源工作流”。
+  if (!rows.some(row => row.setting_key === 'comfy_hires_sampling_mode')
+    && rows.some(row => ['comfy_hires_steps', 'comfy_hires_cfg'].includes(row.setting_key))) {
+    config.comfyui.hiresSamplingMode = 'custom';
+  }
   let applied = 0;
   for (const row of rows) {
     const mapping = SETTING_TO_CONFIG[row.setting_key];

@@ -3,23 +3,70 @@
     <div class="hires-main-body">
 
           <div class="hires-section hires-params-section">
-            <div class="hires-section-title">HiresFix 参数</div>
+            <div class="hires-section-title">HiresFix 工作流</div>
+            <linshe-tabs v-model="workflowMode" :options="workflowModeOptions" size="md" aria-label="HiresFix 工作流版本" />
+            <p class="hires-hint">基础版保留原有官方节点流程，沿用现有生图模型，无需额外安装节点或放大模型。进阶版使用超分模型和分块细化，两套流程都支持全局 LoRA。</p>
+            <Transition name="hires-mode" mode="out-in">
+            <div v-if="advanced" key="advanced">
+            <ol class="hires-setup">
+              <li><a href="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth" target="_blank" rel="noopener noreferrer">下载 RealESRGAN_x4plus_anime_6B.pth（官方）</a>。</li>
+              <li>放入 <code>ComfyUI/models/upscale_models/</code>，目录不存在时创建；使用共享模型目录的用户，放入 ComfyUI 已配置的 <code>upscale_models</code> 目录。保留文件名。</li>
+              <li>在 ComfyUI Manager 中搜索并安装 <a href="https://github.com/ssitu/ComfyUI_UltimateSDUpscale" target="_blank" rel="noopener noreferrer">Ultimate SD Upscale</a> 节点包，然后重启 ComfyUI。</li>
+              <li>确认下方模型文件名后保存。未完成配置时请先使用基础版；切换不会自动下载或安装。</li>
+            </ol>
+            <div class="form-group">
+              <label class="fl" for="hires-upscale-model">放大模型<span class="fl-sub">填写 ComfyUI 的 upscale_models 文件名；留空使用普通插值</span></label>
+              <linshe-input id="hires-upscale-model" v-model="upscaleModel" placeholder="RealESRGAN_x4plus_anime_6B.pth" />
+              <p class="hires-hint">Anime6B 适合动漫线条；其他画风可换放大模型。需安装所填模型及 Ultimate SD Upscale 节点。原图长边 1600 时，设 3200 即两倍放大。</p>
+            </div>
+            </div>
+            <p v-else key="basic" class="hires-hint">基础版使用下方步数、CFG 和重绘幅度；进阶采样及超分设置会保留，切回进阶版可继续使用。</p>
+            </Transition>
+            <linshe-tabs v-if="advanced" v-model="samplingMode" :options="samplingModeOptions" size="sm" aria-label="采样参数来源" />
+            <div aria-live="polite">
+            <Transition name="hires-mode" mode="out-in">
+              <div :key="samplingPanelMode" class="hires-sampling-panel">
+                <template v-if="followSource">
+                  <div class="hires-section-title">采样参数自动跟随原图</div>
+                  <p class="hires-hint">步数、CFG、采样器和调度器在细化时从对应的源工作流读取；不同原图可能使用不同参数。下方的重绘幅度和最长边仍由你设置。</p>
+                  <p class="hires-hint">备用参数：{{ steps }} 步 · CFG {{ cfg }}。仅在源采样参数缺失或无法唯一确定时使用，不代表原图的实际参数。</p>
+                  <linshe-button variant="link" size="sm" :aria-expanded="showSamplingFallback" @click="showSamplingFallback = !showSamplingFallback">{{ showSamplingFallback ? '收起备用参数' : '调整备用参数' }}</linshe-button>
+                </template>
+                <template v-else>
+                  <div class="hires-section-title">{{ advanced ? '使用自定义采样参数' : '采样参数' }}</div>
+                  <p class="hires-hint">下方步数和 CFG 将直接用于细化；采样器和调度器沿用细化工作流。</p>
+                </template>
+                <Transition name="hires-mode">
+                <div v-if="!followSource || showSamplingFallback" class="hires-params">
+                  <div class="form-group">
+                    <label class="fl" for="hires-steps">{{ followSource ? '备用步数' : '步数' }}</label>
+                    <linshe-input id="hires-steps" v-model.number="steps" type="number" min="1" max="100" step="1" />
+                  </div>
+                  <div class="form-group">
+                    <label class="fl" for="hires-cfg">{{ followSource ? '备用 CFG' : 'CFG' }}</label>
+                    <linshe-input id="hires-cfg" v-model.number="cfg" type="number" min="0" max="20" step="0.1" />
+                  </div>
+                </div>
+                </Transition>
+              </div>
+            </Transition>
+            </div>
             <div class="hires-params">
               <div class="form-group">
-                <label class="fl">步数<span class="fl-sub">（推荐30~40）越高越精细，耗时越久</span></label>
-                <linshe-input v-model.number="steps" type="number" min="1" max="100" step="1" class="fi" />
-              </div>
-              <div class="form-group">
-                <label class="fl">CFG<span class="fl-sub">（推荐3~5）</span></label>
-                <linshe-input v-model.number="cfg" type="number" min="0" max="20" step="0.1" class="fi" />
-              </div>
-              <div class="form-group">
-                <label class="fl">重绘幅度<span class="fl-sub">（推荐0.3~0.5）</span></label>
+                <label class="fl">重绘幅度<span class="fl-sub">越低越接近原图；进阶分块细化可从 0.2 开始</span></label>
                 <linshe-input v-model.number="denoise" type="number" min="0" max="1" step="0.01" class="fi" />
               </div>
               <div class="form-group">
                 <label class="fl">最长边<span class="fl-sub">（像素，默认2000）</span></label>
                 <linshe-input v-model.number="maxSize" type="number" min="256" max="8192" step="100" class="fi" />
+              </div>
+              <div class="form-group">
+                <label class="fl" for="hires-global-scale">全局 LoRA 权重倍率<span class="fl-sub">1 沿用，0 不加载；只影响细化，不改生图设置</span></label>
+                <linshe-input id="hires-global-scale" v-model.number="globalLoraScale" type="number" min="0" max="2" step="0.05" />
+              </div>
+              <div v-show="advanced" class="form-group">
+                <label class="fl" for="hires-source-blend">原图保留比例<span class="fl-sub">建议 0；混回原图会减弱锐度，改形时可能重影</span></label>
+                <linshe-input id="hires-source-blend" v-model.number="sourceBlend" type="number" min="0" max="1" step="0.05" />
               </div>
             </div>
           </div>
@@ -104,7 +151,7 @@
             </TransitionGroup>
 
             <div v-if="items.length === 0" class="lora-empty-hint">
-              尚未配置任何强化HiresFix细化的LoRA，点击下方按钮添加
+              可选：添加细化专用 LoRA。同路径配置优先于全局倍率和角色权重。
             </div>
 
             <div class="lora-add-btn" role="button" tabindex="0" @click="addLoraGroup" @keydown.enter.prevent="addLoraGroup" @keydown.space.prevent="addLoraGroup">
@@ -116,8 +163,7 @@
     </div>
 
     <template #footer>
-      <span class="lora-civitai-label">LoRA 获取：</span>
-      <a href="https://civitai.com/models/2619830/turbo-for-anima-less-steps" target="_blank" rel="noopener noreferrer" class="lora-civitai-link">CivitAI 搜索Turbo-ANIMA（步数：12，CFG：1）</a>
+<span class="lora-civitai-label">请使用与当前底模兼容的 LoRA</span>
       <div style="flex:1"></div>
       <linshe-button variant="primary" @click="save" :disabled="loraLoading">
         {{ loraLoading ? '保存中…' : '保存' }}
@@ -137,10 +183,15 @@ import LinsheSwitch from './ui/LinsheSwitch.vue'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
+  initialUpscaleModel: { type: String, default: 'RealESRGAN_x4plus_anime_6B.pth' },
+  initialWorkflowMode: { type: String, default: 'basic' },
+  initialSamplingMode: { type: String, default: 'source' },
+  initialGlobalLoraScale: { type: Number, default: 1 },
+  initialSourceBlend: { type: Number, default: 0 },
   initialLoras: { type: Array, default: () => [] },
   initialSteps: { type: Number, default: 35 },
   initialCfg: { type: Number, default: 5 },
-  initialDenoise: { type: Number, default: 0.35 },
+  initialDenoise: { type: Number, default: 0.2 },
   initialMaxSize: { type: Number, default: 2000 },
   initialArtistMode: { type: String, default: 'empty' },
   initialArtist: { type: String, default: '' },
@@ -150,10 +201,22 @@ const emit = defineEmits(['update:modelValue', 'saved'])
 
 const toastFn = inject('toast')
 
+const upscaleModel = ref('RealESRGAN_x4plus_anime_6B.pth')
+const workflowMode = ref('basic')
+const workflowModeOptions = [{ value: 'basic', label: '基础版（默认）' }, { value: 'advanced', label: '进阶版' }]
+const advanced = computed(() => workflowMode.value === 'advanced')
+const samplingMode = ref('source')
+const followSource = computed(() => advanced.value && samplingMode.value === 'source')
+const samplingPanelMode = computed(() => !advanced.value ? 'basic' : samplingMode.value)
+const showSamplingFallback = ref(false)
+watch(samplingPanelMode, () => { showSamplingFallback.value = false })
+const globalLoraScale = ref(1)
+const sourceBlend = ref(0)
+const samplingModeOptions = [{ value: 'source', label: '跟随原图' }, { value: 'custom', label: '自定义' }]
 const items = ref([])
 const steps = ref(35)
 const cfg = ref(5)
-const denoise = ref(0.35)
+const denoise = ref(0.2)
 const maxSize = ref(2000)
 const artistMode = ref('empty')
 const artistModeOptions = [
@@ -180,10 +243,16 @@ watch(() => props.modelValue, (v) => {
     for (const item of raw) {
       if (item.enabled === undefined) item.enabled = true
     }
+    samplingMode.value = props.initialSamplingMode === 'custom' ? 'custom' : 'source'
+    globalLoraScale.value = props.initialGlobalLoraScale
+    sourceBlend.value = props.initialSourceBlend
+    upscaleModel.value = props.initialUpscaleModel
+    workflowMode.value = props.initialWorkflowMode === 'advanced' ? 'advanced' : 'basic'
+    showSamplingFallback.value = false
     items.value = raw
     steps.value = Number.isFinite(props.initialSteps) ? props.initialSteps : 35
     cfg.value = Number.isFinite(props.initialCfg) ? props.initialCfg : 5
-    denoise.value = Number.isFinite(props.initialDenoise) ? props.initialDenoise : 0.35
+    denoise.value = Number.isFinite(props.initialDenoise) ? props.initialDenoise : 0.2
     maxSize.value = Number.isFinite(props.initialMaxSize) ? props.initialMaxSize : 2000
     artistMode.value = ['inherit', 'empty', 'specified'].includes(props.initialArtistMode) ? props.initialArtistMode : 'empty'
     artist.value = props.initialArtist || ''
@@ -264,17 +333,19 @@ function onLoraKeydown(e, idx) {
 }
 
 async function save() {
+  const bounded = (value, fallback, max) => Math.max(0, Math.min(max, Number.isFinite(value) ? value : fallback))
+  const extraSettings = { workflowMode: workflowMode.value, samplingMode: samplingMode.value, globalLoraScale: bounded(globalLoraScale.value, 1, 2), sourceBlend: bounded(sourceBlend.value, 0, 1), upscaleModel: upscaleModel.value.trim() }
   const validLoras = items.value.filter(l => l.path && l.path.trim())
   const savedSteps = Math.max(1, Math.min(100, parseInt(steps.value, 10) || 35))
-  const savedCfg = Math.max(0, Math.min(20, parseFloat(cfg.value) || 5))
-  const savedDenoise = Math.max(0, Math.min(1, parseFloat(denoise.value) || 0.35))
+  const savedCfg = bounded(cfg.value, 5, 20)
+  const savedDenoise = bounded(denoise.value, 0.2, 1)
   const savedMaxSize = Math.max(256, Math.min(8192, parseInt(maxSize.value, 10) || 2000))
   const savedArtistMode = ['inherit', 'empty', 'specified'].includes(artistMode.value) ? artistMode.value : 'empty'
   const savedArtist = (artist.value || '').trim()
   loraLoading.value = true
   try {
-    await api.updateHiresSettings({ loras: validLoras, steps: savedSteps, cfg: savedCfg, denoise: savedDenoise, maxSize: savedMaxSize, artistMode: savedArtistMode, artist: savedArtist })
-    emit('saved', { loras: validLoras, steps: savedSteps, cfg: savedCfg, denoise: savedDenoise, maxSize: savedMaxSize, artistMode: savedArtistMode, artist: savedArtist })
+    await api.updateHiresSettings({ ...extraSettings, loras: validLoras, steps: savedSteps, cfg: savedCfg, denoise: savedDenoise, maxSize: savedMaxSize, artistMode: savedArtistMode, artist: savedArtist })
+    emit('saved', { ...extraSettings, loras: validLoras, steps: savedSteps, cfg: savedCfg, denoise: savedDenoise, maxSize: savedMaxSize, artistMode: savedArtistMode, artist: savedArtist })
     emit('update:modelValue', false)
     if (toastFn) toastFn('HiresFix 设置已保存', 'success')
   } catch (e) {
@@ -287,6 +358,13 @@ async function save() {
 </script>
 
 <style scoped>
+.hires-sampling-panel { margin: 12px 0 16px; }
+.hires-setup { padding-left: 20px; font-size: 12px; line-height: 1.8; color: var(--text-secondary); }
+.hires-setup a { color: var(--accent); text-decoration: underline; overflow-wrap: anywhere; }
+.hires-setup code { overflow-wrap: anywhere; }
+.hires-mode-enter-active, .hires-mode-leave-active { transition: opacity 0.3s ease; }
+.hires-mode-enter-from, .hires-mode-leave-to { opacity: 0; }
+
 /* ═══ 弹窗骨架交给 LinsheModal，本组件只保留内容样式 ═══ */
 
 .hires-hint { margin: 0 0 16px; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
@@ -307,7 +385,7 @@ async function save() {
 .artist-specified-block { margin-top: 10px; overflow: hidden; }
 .artist-input { margin: 0; }
 .artist-block-enter-active, .artist-block-leave-active {
-  transition: opacity 0.2s ease, max-height 0.24s ease, margin 0.24s ease;
+  transition: opacity 0.3s ease, max-height 0.3s ease, margin 0.3s ease;
 }
 .artist-block-enter-from, .artist-block-leave-to {
   opacity: 0; max-height: 0; margin-top: 0;
