@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildStandingPromptMessages } from '../src/services/expressionStandingPrompt.js';
-import { parseStandingPrompts, STANDING_PREFIX } from '../src/services/expressionStandingPipeline.js';
+import { parseStandingPrompts, frameStandingPrompt, STANDING_COMPOSITION, STANDING_PREFIX } from '../src/services/expressionStandingPipeline.js';
 
 const input = { systemRules: 'shared rules', slots: [{ id: 'normal', name: '正常' }, { id: 'emoji:42', name: '开心' }], persona: 'PERSONA_A', requirement: 'REQUEST_A' };
 
@@ -27,4 +27,17 @@ test('complete slot example round trips emoji-style escaped identity and appeara
   assert.equal(parsed.get('normal'), `${STANDING_PREFIX}, ${example.prompts[0].prompt}`);
   assert.ok(messages[2].content.includes('不超过 80 个英文词'));
   assert.ok(messages[2].content.includes('不要重复输出'));
+});
+
+test('every prompt is framed with a leading solo before it reaches ComfyUI', () => {
+  assert.ok(STANDING_PREFIX.startsWith('solo, '));
+  // 生成链路：LLM 产出的标签串一律加前置
+  const parsed = parseStandingPrompts(JSON.stringify({ prompts: [{ slotId: 'normal', prompt: 'Name \\(Series\\), gentle smile' }] }), [{ id: 'normal', name: '正常' }]);
+  assert.equal(parsed.get('normal'), `solo, ${STANDING_COMPOSITION}, Name \\(Series\\), gentle smile`);
+  // 手改 / 复用链路：没有前置的提示词补一份，已经带前置的不重复加
+  assert.equal(frameStandingPrompt('1girl, blue eyes'), `${STANDING_PREFIX}, 1girl, blue eyes`);
+  assert.equal(frameStandingPrompt(`${STANDING_PREFIX}, 1girl`), `${STANDING_PREFIX}, 1girl`);
+  // 历史数据：老提示词开头那份不带 solo 的旧标签改写成新口径，而不是再前置一遍
+  assert.equal(frameStandingPrompt(`${STANDING_COMPOSITION}, 1girl`), `${STANDING_PREFIX}, 1girl`);
+  assert.equal(frameStandingPrompt(STANDING_COMPOSITION), STANDING_PREFIX);
 });

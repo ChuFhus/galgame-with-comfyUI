@@ -15,7 +15,7 @@ import { getImageDir, buildImageUrl, deleteImageFileByUrl } from './imagePaths.j
 import { postProcessAsset } from './town/assetPostProcess.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { getStandingDisplay } from './standingDisplay.js';
-import { parseStandingPrompts, runStandingBatch, STANDING_PREFIX } from './expressionStandingPipeline.js';
+import { parseStandingPrompts, runStandingBatch, frameStandingPrompt } from './expressionStandingPipeline.js';
 
 const CATEGORY = 'expression_standing';
 const busyCharacters = new Set();
@@ -156,7 +156,8 @@ export function startStandingBatch(id, { slotIds, requirement = '', reusePrompts
           db.prepare(`UPDATE character_expression_standings SET status='generating' WHERE character_id=? AND slot_id=?`).run(id, slot.id);
           notify(id);
           const opts = JSON.parse(row.config_json);
-          const framedPrompt = prompt.startsWith(STANDING_PREFIX) ? prompt : `${STANDING_PREFIX}, ${prompt}`;
+          // 最终阀门：不论提示词来自本次生成、库里复用还是用户手改，进 ComfyUI 前一律补上固定前置（solo 开头）。
+          const framedPrompt = frameStandingPrompt(prompt);
           const result = await imageGenerator(framedPrompt, { ...opts, scene: 'portrait', workflowScene: null, promptScene: 'avatar', priority: 'high', disableRAG: true, alreadyPrepared: true, persistPreparation: false });
           if (!result.success || !result.images?.length) throw new Error(result.error || '未返回立绘图片');
           await commitImage(id, slot.id, decodeImage(result.images[0].base64));

@@ -13,6 +13,7 @@ const { getDb } = await import('../src/db/index.js');
 const service = await import('../src/services/expressionStandingService.js');
 const { config } = await import('../src/config.js');
 const { getStandingDisplay } = await import('../src/services/standingDisplay.js');
+const { STANDING_PREFIX } = await import('../src/services/expressionStandingPipeline.js');
 const db = getDb();
 after(() => { db.close(); fs.rmSync(imageRoot, { recursive: true, force: true }); });
 
@@ -184,4 +185,22 @@ test('prompt stage failure submits no images and preserves old prompt/image', as
   });
   assert.equal((await waitForJob(jobId)).status, 'failed'); assert.equal(images, 0);
   assert.equal(service.listExpressionStandings(id).slots[0].prompt, 'previous valid illustration prompt');
+});
+
+test('every prompt handed to ComfyUI starts with solo, whether generated or reused', async () => {
+  const id = newCharacter(); const image = dataUrl(await sourceImage()); const seen = [];
+  const { jobId } = service.startStandingBatch(id, { slotIds: ['normal'] }, {
+    promptGenerator: async (_, targets) => new Map(targets.map(s => [s.id, '1girl, brown hair, white dress'])),
+    imageGenerator: async prompt => { seen.push(prompt); return { success: true, images: [{ base64: image }] }; },
+  });
+  assert.equal((await waitForJob(jobId)).status, 'done');
+  assert.equal(seen[0], `${STANDING_PREFIX}, 1girl, brown hair, white dress`);
+  // 用户手改后复用已存提示词：同一个前置阀门，不重复补标签
+  service.updateStandingPrompt(id, 'normal', '1girl, brown hair, changed dress');
+  const retry = service.startStandingBatch(id, { slotIds: ['normal'], reusePrompts: true }, {
+    promptGenerator: () => { throw new Error('must reuse saved prompts'); },
+    imageGenerator: async prompt => { seen.push(prompt); return { success: true, images: [{ base64: image }] }; },
+  });
+  assert.equal((await waitForJob(retry.jobId)).status, 'done');
+  assert.equal(seen[1], `${STANDING_PREFIX}, 1girl, brown hair, changed dress`);
 });
