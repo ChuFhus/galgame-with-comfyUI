@@ -1,7 +1,7 @@
 <template>
-  <Teleport to="body">
+  <Teleport :to="anchor || 'body'">
     <Transition name="modal-fade">
-      <div v-if="isOpen" class="modal-overlay linshe-modal-overlay" @click.self="close">
+      <div v-if="isOpen" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored }" @click.self="close">
         <div class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full }, panelClass]" @click.stop>
           <div class="modal-header">
             <h3 class="modal-title">{{ title }}</h3>
@@ -41,10 +41,17 @@ const props = defineProps({
   full: { type: Boolean, default: false },   // 大型管理面板（.modal-full）
   panelClass: { type: [String, Array, Object], default: '' },
   bodyClass: { type: [String, Array, Object], default: '' },
+  /**
+   * 宿主选择器（如 '.page-host'）：遮罩 Teleport 进该元素并铺满它，面板相对宿主居中，
+   * 而不是相对整个视口居中（页面两侧有导航 / 侧栏时，视口居中的面板看着是偏的）。
+   * 宿主需要是定位元素（position 非 static）。留空＝旧口径：Teleport 到 body、相对视口居中。
+   */
+  anchor: { type: String, default: '' },
 })
 
 const emit = defineEmits(['update:modelValue', 'close'])
 const isOpen = computed(() => props.modelValue || props.visible)
+const isAnchored = computed(() => !!props.anchor)
 
 function close() {
   emit('update:modelValue', false)
@@ -98,6 +105,12 @@ watch(isOpen, (v) => {
 .linshe-modal .modal-body::-webkit-scrollbar-thumb:hover {
   background: rgba(var(--accent-rgb), 0.45);
 }
+
+/* 宿主居中模式（传了 anchor）：遮罩被 Teleport 进宿主元素，fixed 改 absolute 铺满宿主，
+   面板因此相对宿主左右居中，而不是相对视口居中。 */
+.linshe-modal-overlay.is-host-anchored { position: absolute; }
+/* 面板宽度上限改按宿主宽度算：基座的 94vw/96vw 是视口口径，宿主被侧栏占去一块后会顶出边界 */
+.linshe-modal-overlay.is-host-anchored .modal-panel { max-width: 100%; }
 
 /* 移动端：保留 PC 的「圆角浮层」观感 —— 面板圆角、描边、白色内衬一律不动，
    只把遮罩留白从 20px 收紧到 8px，并把刘海 / 挖孔 / 手势条的安全区让给遮罩

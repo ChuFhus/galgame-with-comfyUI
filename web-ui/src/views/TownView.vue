@@ -36,7 +36,8 @@ v-if="latestActivity && initialized" :key="latestActivity.seq" class="town-activ
         <span class="tat-text">{{ latestActivity.text }}</span>
       </div>
     </Transition>
-    <LinsheModal v-model="activityPanelOpen" title="居民动态">
+    <!-- anchor：这个窗口属于小镇页面，左右居中相对 page-host（视口居中会被左侧导航/侧栏带偏） -->
+    <LinsheModal v-model="activityPanelOpen" title="居民动态" anchor=".page-host">
       <div class="town-activity-panel">
         <div class="tap-toolbar">
           <span class="tap-hint">最近 40 条全镇行动记录</span>
@@ -210,8 +211,8 @@ v-if="!hdActive" variant="ghost" size="sm"
 v-if="chatCharacterId != null" :key="`char:${chatCharacterId}`"
           :character-id="chatCharacterId" :town-context="dialogueContext" @context-invalid="refreshDialogueWorld" :display-name="chatResident?.displayName"
           :standing-url="chatResident?.standingUrl" :avatar-url="chatResident?.avatarPath"
-          :status-line="dialogueStatusLine" :activity="residentActivityMerged" :activity-loading="residentActivity.loading" :activity-loaded="residentActivity.loaded"
-          @fetch-activity="fetchResidentActivity" @open-status="openResidentStatus"
+          :status-line="dialogueStatusLine"
+          @open-status="openResidentStatus" @open-activity="openResidentActivity"
           :player-name="player?.displayName || '我'" @close="closeDialogue"
           @story="openResidentStory"
 />
@@ -221,8 +222,8 @@ v-else-if="chatNpcId != null"
           :npc-id="chatNpcId" :world-id="dialogueContext?.worldId" :world-epoch="dialogueContext?.worldEpoch"
           :player-name="player?.displayName || '我'"
           :display-name="chatNpcName"
-          :status-line="dialogueStatusLine" :activity="residentActivityMerged" :activity-loading="residentActivity.loading" :activity-loaded="residentActivity.loaded"
-          @fetch-activity="fetchResidentActivity" @open-status="openResidentStatus"
+          :status-line="dialogueStatusLine"
+          @open-status="openResidentStatus" @open-activity="openResidentActivity"
           @close="closeDialogue" @story="openResidentStory"
           @character-chat="openLinkedCharacterChat" @context-invalid="refreshDialogueWorld"
         />
@@ -231,6 +232,8 @@ v-else-if="chatNpcId != null"
     <p v-if="dialogueOpening || dialogueError || lifeMoveError || travelNotice" class="town-dialogue-notice" role="status">{{ travelNotice || lifeMoveError || dialogueError || '正在停下脚步…' }}</p>
     <TownResidentStatusModal v-model="residentStatusOpen" :name="chatResident?.displayName || chatNpcName"
       :status="residentStatus.data" :loading="residentStatus.loading" @refresh="fetchResidentStatus" />
+    <TownResidentActivityModal v-model="residentActivityOpen" :name="chatResident?.displayName || chatNpcName"
+      :activity="residentActivityMerged" :loading="residentActivity.loading" />
     <TownWalletPanel :open="showWalletPanel" @close="closeWalletPanel" />
     <TownPaperPanel v-if="spotReady && worldSpot" :open="true" :title="worldSpot.displayName" @close="closeWorldSpot">
       <p>选择这里的功能。服务可展开特殊奇遇，交易可查看商品并买卖。</p>
@@ -362,6 +365,7 @@ import TownWalletPanel from '../components/town/TownWalletPanel.vue'
 import TownPaperPanel from '../components/town/TownPaperPanel.vue'
 import TownResidentActions from '../components/town/TownResidentActions.vue'
 import TownResidentStatusModal from '../components/town/TownResidentStatusModal.vue'
+import TownResidentActivityModal from '../components/town/TownResidentActivityModal.vue'
 import TownCapabilityPicker from '../components/town/TownCapabilityPicker.vue'
 import TownAdminPanel from '../components/town/TownAdminPanel.vue'
 import TownServiceManagerHost from '../components/town/TownServiceManagerHost.vue'
@@ -513,7 +517,7 @@ const dialogueContext = ref(null)
 const dialogueOpening = ref(false)
 const dialogueError = ref('')
 
-// ── 居民动态：对话框内的当前状态 / 行动记录，世界页左上角信息流 ──
+// ── 居民动态：对话框头部的「状态 / 动态」独立弹窗，世界页左上角信息流 ──
 // 当前状态直接取地图快照里的 activityText（服务端权威、随快照刷新）
 const dialogueStatusLine = computed(() => {
   const resident = chatResident.value
@@ -521,7 +525,7 @@ const dialogueStatusLine = computed(() => {
   const live = town.agents.find(a => a.agentKey === resident.agentKey)
   return live?.activityText || resident.activityText || '在镇上生活'
 })
-// 对话框「动态」页签：单个居民最近 100 条行动记录（按 actorId 缓存，换人即作废）
+// 对话框「动态」弹窗：单个居民最近 100 条行动记录（按 actorId 缓存，换人即作废）
 const residentActivity = ref({ actorId: '', entries: [], loading: false, loaded: false })
 async function fetchResidentActivity() {
   const actorId = chatResident.value?.actorId
@@ -540,13 +544,23 @@ async function fetchResidentActivity() {
     }
   }
 }
-// 居民状态弹窗（独立窗口，不挤占对话框）：需求/心情/目标/技能/最近来往，按 actorId 缓存
+// 居民状态 / 动态弹窗（独立窗口，不挤占对话框）：需求、心情、目标、技能、最近来往 / 行动记录
+// 两个窗口互斥：头部按钮点第二个时先把前一个收掉，避免叠两层遮罩
 const residentStatus = ref({ actorId: '', data: null, loading: false, loaded: false })
 const residentStatusOpen = ref(false)
+const residentActivityOpen = ref(false)
 function openResidentStatus() {
   if (!chatResident.value?.actorId) return
+  residentActivityOpen.value = false
   residentStatusOpen.value = true
   if (!residentStatus.value.loaded || residentStatus.value.actorId !== chatResident.value.actorId) fetchResidentStatus()
+}
+function openResidentActivity() {
+  if (!chatResident.value?.actorId) return
+  residentStatusOpen.value = false
+  residentActivityOpen.value = true
+  // 打开对话时已预取过一次；失败或还没返回时这里再要一次
+  if (!residentActivity.value.loaded && !residentActivity.value.loading) fetchResidentActivity()
 }
 async function fetchResidentStatus() {
   const actorId = chatResident.value?.actorId
@@ -561,7 +575,7 @@ async function fetchResidentStatus() {
     if (chatResident.value?.actorId === actorId) residentStatus.value = { actorId, data: keep, loading: false, loaded: false }
   }
 }
-// 「动态」页签 = 后端行动记录 + 前端合成足迹（足迹只在内存，不进存档；见 wanderTrail.js）
+// 「动态」弹窗 = 后端行动记录 + 前端合成足迹（足迹只在内存，不进存档；见 wanderTrail.js）
 const residentActivityMerged = computed(() => mergeActivityWithTrail(
   residentActivity.value.entries,
   town.wanderTrails?.[chatResident.value?.actorId] || [],
@@ -1881,6 +1895,7 @@ onBeforeUnmount(() => {
   releaseDialogueResident(chatResident.value)
   chatResident.value = null
   residentStatusOpen.value = false
+  residentActivityOpen.value = false
   town.stopTownStream()
 })
 
@@ -1951,6 +1966,8 @@ function closeDialogue() {
   dialogueError.value = ''
   dialogueRequest++
   dialogueOpening.value = false
+  residentStatusOpen.value = false
+  residentActivityOpen.value = false
   stopDialogueHoldTimer()
   chatNpcId.value = null
   chatCharacterId.value = null

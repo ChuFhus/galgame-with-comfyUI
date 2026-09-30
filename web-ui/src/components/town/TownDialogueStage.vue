@@ -29,28 +29,14 @@ v-if="person.side === 'left' && npcBubble && chatActive && !historyOpen" :key="n
         </div>
         <div class="td-actions">
           <linshe-button variant="ghost" size="sm" @click="$emit('open-status')">状态</linshe-button>
-          <linshe-button variant="ghost" size="sm" :aria-expanded="activityOpen" @click="toggleActivity">{{ activityOpen ? '收起动态' : '动态' }}</linshe-button>
+          <linshe-button variant="ghost" size="sm" @click="$emit('open-activity')">动态</linshe-button>
           <linshe-button variant="ghost" size="sm" :aria-expanded="historyOpen" @click="toggleHistory">{{ historyOpen ? '收起记录' : '历史' }}</linshe-button>
         </div>
       </header>
       <h2>{{ displayName }}</h2>
       <div class="td-page" :key="pageKey">
-        <div ref="body" class="td-body" :class="{ 'td-body--history': historyOpen || activityOpen }" tabindex="0" :aria-live="historyOpen || activityOpen ? 'polite' : 'off'" :aria-label="activityOpen ? '最近行动记录' : historyOpen ? '最近对话记录' : chatActive ? '当前对话' : '场景'">
-          <template v-if="activityOpen">
-            <p v-if="activityLoading" role="status">正在读取行动记录…</p>
-            <template v-else>
-              <p v-if="!activity.length" class="td-muted">还没有留下行动记录，去镇上转转会有的。</p>
-              <ul v-else class="td-activity">
-                <li v-for="item in activity" :key="item.seq" :class="{ 'is-local': item.local }">
-                  <time>{{ formatActivityTime(item.occurredAt) }}</time>
-                  <span v-if="item.local" class="td-footprint-chip">足迹</span>
-                  <span>{{ item.text }}</span>
-                  <span v-if="item.reason" class="td-reason-chip">{{ item.reason }}</span>
-                </li>
-              </ul>
-            </template>
-          </template>
-          <template v-else-if="historyOpen">
+        <div ref="body" class="td-body" :class="{ 'td-body--history': historyOpen }" tabindex="0" :aria-live="historyOpen ? 'polite' : 'off'" :aria-label="historyOpen ? '最近对话记录' : chatActive ? '当前对话' : '场景'">
+          <template v-if="historyOpen">
             <p v-if="loading" role="status">正在读取对话…</p>
             <template v-else>
               <linshe-button v-if="hasMoreHistory" variant="link" size="sm" @click="$emit('load-older')">更早的记录</linshe-button>
@@ -111,33 +97,15 @@ const props = defineProps({
   error: { type: String, default: '' },
   status: { type: String, default: '' }, hasMoreHistory: Boolean, maxLength: { type: Number, default: 200 },
   retryable: Boolean, draftRestore: Object, actions: { type: Array, default: () => [] },
-  // 居民当前状态（地图 activityText）与最近行动记录（「动态」页签）
+  // 居民当前状态（地图 activityText）显示在头部；「动态」与「状态」一样走独立窗口（TownResidentActivityModal）
   statusLine: { type: String, default: '' },
-  activity: { type: Array, default: () => [] }, activityLoading: Boolean, activityLoaded: Boolean,
 })
-const emit = defineEmits(['send', 'close', 'reload', 'load-older', 'retry', 'action', 'fetch-activity', 'open-status'])
+const emit = defineEmits(['send', 'close', 'reload', 'load-older', 'retry', 'action', 'open-status', 'open-activity'])
 const root = ref(null), input = ref(null), body = ref(null)
-const draft = ref(''), composing = ref(false), historyOpen = ref(false), activityOpen = ref(false), failedImages = ref({})
-// 「动态 / 历史」两页签互斥展开；首次展开时向宿主要一次数据（「状态」是独立弹窗，不走页签）
-function toggleActivity() {
-  activityOpen.value = !activityOpen.value
-  if (activityOpen.value) {
-    historyOpen.value = false
-    // 只看后端是否已加载：合并列表里有前端足迹时长度恒非零，不能拿它当判据
-    if (!props.activityLoaded && !props.activityLoading) emit('fetch-activity')
-  }
-}
+const draft = ref(''), composing = ref(false), historyOpen = ref(false), failedImages = ref({})
+// 「历史」页签：在暖纸对话框内展开对话记录；「动态 / 状态」交给宿主开的弹窗，互不挤占
 function toggleHistory() {
   historyOpen.value = !historyOpen.value
-  if (historyOpen.value) activityOpen.value = false
-}
-function formatActivityTime(occurredAt) {
-  const date = new Date(occurredAt)
-  if (!Number.isFinite(date.getTime())) return ''
-  const now = new Date()
-  const sameDay = date.toDateString() === now.toDateString()
-  const hhmm = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  return sameDay ? hhmm : `${date.getMonth() + 1}月${date.getDate()}日 ${hhmm}`
 }
 const viewportStyle = ref({}), compact = ref(false)
 watch(() => props.draftRestore, value => { if (value) draft.value = value.text })
@@ -236,9 +204,9 @@ function resize() {
     : { top: `${offset}px`, height: `${height}px` }
 }
 let previousFocus, observer
-watch(() => [props.messages.length, props.sending, historyOpen.value, activityOpen.value, props.chatActive], async () => {
+watch(() => [props.messages.length, props.sending, historyOpen.value, props.chatActive], async () => {
   await nextTick()
-  if (body.value) body.value.scrollTop = (historyOpen.value || activityOpen.value || props.chatActive) ? body.value.scrollHeight : 0
+  if (body.value) body.value.scrollTop = (historyOpen.value || props.chatActive) ? body.value.scrollHeight : 0
 })
 watch(() => props.loading || props.sending || props.blocked, async busy => {
   await nextTick()
@@ -304,25 +272,6 @@ h2 { color: #59483d; font-size: 20px; font-weight: 700; margin: 6px 0 8px; }
   color: #a1846e; font-size: 10px; letter-spacing: .02em; line-height: 1.5;
   padding: 2px 9px; border: 1px solid rgba(161, 132, 110, .45); border-radius: 999px;
   background: rgba(255, 251, 243, .7);
-}
-.td-activity { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-.td-activity li {
-  display: flex; gap: 10px; align-items: baseline; font-size: 12px; color: #4a3a2c;
-  padding: 5px 10px; border: 1px solid rgba(161, 132, 110, .3); border-radius: 10px;
-  background: rgba(255, 251, 243, .65);
-}
-.td-activity li time { flex: none; color: #a1846e; font-size: 10px; }
-.td-activity-toolbar { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.td-footprint-hint { color: #a1846e; font-size: 10px; }
-.td-activity li.is-local { border-style: dashed; border-color: rgba(124, 143, 124, .5); }
-.td-footprint-chip {
-  flex: none; padding: 1px 6px; border-radius: 999px; font-size: 10px; color: #6d826d;
-  border: 1px dashed rgba(124, 143, 124, .6); background: rgba(124, 143, 124, .1);
-}
-/* 「为什么做/为什么中断」：理由小标签，靠右弱化显示 */
-.td-reason-chip {
-  flex: none; margin-left: auto; padding: 1px 6px; border-radius: 999px; font-size: 10px;
-  color: #a1846e; border: 1px solid rgba(161, 132, 110, .4); background: rgba(255, 251, 243, .7);
 }
 .td-speaker, .td-muted { font-size: 12px; color: #947f6d; }
 /* overflow-x 同样 clip：消息里的果冻按钮贴边放大时会把横向滚动条闪出来（同 TownResidentActions） */

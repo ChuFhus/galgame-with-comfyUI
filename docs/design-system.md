@@ -70,7 +70,7 @@
 - **`LinsheSelect`**：下拉选择统一使用。触发器与 LinsheInput 同皮肤；选项面板 Teleport 到 body 的轻量浮层，选中态用 `--accent`，空间不足自动向上翻转。
 - **`LinsheSwitch`**：拨动开关统一使用，不写裸 checkbox 开关样式。关/开两态等高不跳变（关＝中性糖、开＝主题糖）；`aria-label`、`title` 等透传到内部 input。
 - **`LinsheTabs`**：分段选择/页签统一使用，不写裸 div 或 button 分段控件；`options` 为 `{ label, value }`；轨道用 `--bg-sunken` 暖纸凹陷，`md` 页签式（选中项 `--accent` 浅底 + 底部指示条）、`sm` 小分段（选中项主题表面胶囊 + `--shadow-xs`），文案统一 `--accent`。
-- **`LinsheModal`**：弹窗基础窗体统一使用，不写裸遮罩/面板。`v-model` 控制显隐，`title` 为标题，`wide` / `full` 控制面板宽度（`full` 宽度走 `--modal-full-width`，个别面板可用 `panel-class` 覆盖该 token，不改组件皮肤），`#header-extra` / `#footer` 为附加插槽；暖色为暖纸外壳 + 白色内衬（对齐 LoRA 设置窗：标题栏与底部操作区留在外壳上，白色内衬只包正文，`--modal-*` token），暗夜为 Cel Glow 深色玻璃。
+- **`LinsheModal`**：弹窗基础窗体统一使用，不写裸遮罩/面板。`v-model` 控制显隐，`title` 为标题，`wide` / `full` 控制面板宽度（`full` 宽度走 `--modal-full-width`，个别面板可用 `panel-class` 覆盖该 token，不改组件皮肤），`#header-extra` / `#footer` 为附加插槽；`anchor` 传宿主选择器（如 `anchor=".page-host"`）时遮罩 Teleport 进宿主并铺满它、面板改为相对宿主居中，用于「这个窗口属于某张页面而不是整个视口」的场景（如小镇的居民动态窗），留空＝默认相对视口居中；暖色为暖纸外壳 + 白色内衬（对齐 LoRA 设置窗：标题栏与底部操作区留在外壳上，白色内衬只包正文，`--modal-*` token），暗夜为 Cel Glow 深色玻璃。
 
 
 **通用约定**（随上游一并合入）：

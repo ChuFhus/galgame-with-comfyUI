@@ -4,8 +4,8 @@
     :portrait-url="standingUrl || character?.standing_url || character?.avatar_path || avatarUrl"
     :player-portrait-url="playerPortraitUrl" :messages="messages" :loading="loading" :sending="sending"
     :blocked="blocked || !settingsReady || interactionBusy" :error="error" :draft-restore="draftRestore" :status="status" :has-more-history="hasMoreOlder" :max-length="4000" :chat-active="chatActive"
-    :status-line="statusLine" :activity="activity" :activity-loading="activityLoading" :activity-loaded="activityLoaded"
-    @fetch-activity="$emit('fetch-activity')" @open-status="$emit('open-status')"
+    :status-line="statusLine"
+    @open-status="$emit('open-status')" @open-activity="$emit('open-activity')"
     @send="sendWithSettings" @reload="load" @load-older="loadOlder" @close="$emit('close')">
     <template #message="{ message }">
       <details v-if="message.type === 'thinking'" class="tcc-thinking">
@@ -46,9 +46,9 @@ import TownResidentActions from './TownResidentActions.vue'
 import TownVnChoice from './TownVnChoice.vue'
 const props = defineProps({ characterId: { type: Number, required: true }, displayName: String, standingUrl: String,
   avatarUrl: String, townContext: Object, serviceBusy: Boolean, playerName: { type: String, default: '我' },
-  statusLine: { type: String, default: '' }, activity: { type: Array, default: () => [] }, activityLoading: Boolean, activityLoaded: Boolean,
+  statusLine: { type: String, default: '' },
  })
-const emit = defineEmits(['close', 'context-invalid', 'story', 'fetch-activity', 'open-status'])
+const emit = defineEmits(['close', 'context-invalid', 'story', 'open-status', 'open-activity'])
 const interactionBusy = ref(false)
 // 对话模式：点「聊聊近况」后才出现输入框与聊天记录，其余功能长条先收起
 const chatActive = ref(false)
