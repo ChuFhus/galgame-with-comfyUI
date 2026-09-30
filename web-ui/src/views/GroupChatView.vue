@@ -220,132 +220,145 @@
       />
     </Teleport>
 
-    <!-- 群设置抽屉 -->
+    <!-- 群设置抽屉：头部标题 / 中部滚动表项 / 底部操作区三段式。
+         表项再多也只撑中部滚动区，功能键永远留在屏幕内（PC 与手机同款）。 -->
     <Transition name="drawer">
       <div v-if="showSettings" class="gc-drawer-overlay" @click.self="showSettings = false">
-        <div class="gc-drawer">
-          <h3>群设置</h3>
-          <label class="gc-field">
-            <span>群名称</span>
-            <linshe-input v-model="editName" type="text" maxlength="24" />
-          </label>
-          <label class="gc-field">
-            <span>群主题</span>
-            <linshe-input v-model="editTopic" type="text" maxlength="60" placeholder="（可选）大家围绕什么话题聊" />
-          </label>
-          <div class="gc-field">
-            <div class="gc-member-title"><span>群头像</span></div>
-            <div class="gc-avatar-row">
-              <div class="gc-avatar-preview" :style="groupAvatarUrl ? {} : { background: 'var(--accent)' }">
-                <img v-if="groupAvatarUrl" :src="groupAvatarUrl" alt="" />
-                <span v-else>{{ (store.activeGroup?.name || '群').charAt(0) }}</span>
-              </div>
-              <linshe-button
-                size="sm"
-                @click="openGroupAvatarPicker"
-              >
-设置群头像
-</linshe-button>
-              <linshe-button
-                v-if="groupAvatarUrl"
-                variant="ghost"
-                size="sm"
-                :disabled="groupAvatarSaving"
-                @click="clearGroupAvatar"
-              >
-恢复默认
-</linshe-button>
-            </div>
-            <span class="gc-member-hint">上传图片、直接粘贴，或从相册最近图片中选取；不设置就显示成员拼图。</span>
-          </div>
-          <div class="gc-field">
-            <div class="gc-member-title">
-              <span>群相册</span>
-              <span class="gc-temp-val">{{ groupImageCount }} 张</span>
-            </div>
-            <div class="gc-avatar-row">
-              <linshe-button size="sm" @click="showGroupAlbum = true">查看群相册</linshe-button>
-            </div>
-            <span class="gc-member-hint">汇总本群里出现过的图片，可点开大图，或按成员筛选。</span>
-          </div>
-          <div class="gc-field">
-            <div class="gc-member-title">
-              <span>温度设置</span>
-              <span class="gc-temp-val">{{ Number(editTemperature).toFixed(1) }}</span>
-            </div>
-            <linshe-slider
-              aria-label="温度设置"
-              :min="0.5" :max="1" :step="0.1"
-              v-model="editTemperature"
-              @change="onTemperatureChange"
-            />
-            <span class="gc-member-hint">群聊生成温度（所有群共享），越低越稳定、越高越有创意，默认 0.7。</span>
-          </div>
-          <div class="gc-field">
-            <div class="gc-member-title">
-              <span>携带上下文消息记忆轮数</span>
-              <span class="gc-temp-val">{{ editSummaryInterval }} 轮</span>
-            </div>
-            <linshe-slider
-              aria-label="携带上下文消息记忆轮数"
-              :min="2" :max="6" :step="1"
-              v-model="editSummaryInterval"
-              @change="onSummaryIntervalChange"
-            />
-            <span class="gc-member-hint">达到设置轮数之后将上下文压缩成总结，默认 4 轮。</span>
-          </div>
-          <div class="gc-field">
-            <div class="gc-member-title">
-              <label for="group-activity">群聊活跃度</label>
-              <span class="gc-temp-val">{{ editActivity }}</span>
-            </div>
-            <linshe-slider
-              id="group-activity" v-model="editActivity"
-              :min="1" :max="5" :step="1" :disabled="activitySaving"
-              @change="onActivityChange"
-            />
-            <span class="gc-member-hint">所有群共享，默认 2。</span>
-          </div>
-          <div class="gc-field gc-member-field">
-            <div class="gc-member-title">
-              <span>群成员</span>
-              <span>{{ editMemberIds.length }} / {{ sortedCharacters.length }}</span>
-            </div>
-            <div class="gc-member-edit">
-              <div
-                v-for="c in sortedCharacters"
-                :key="c.id"
-                role="button"
-                tabindex="0"
-                class="gc-member-check"
-                :class="{ picked: editMemberIds.includes(c.id) }"
-                :aria-pressed="editMemberIds.includes(c.id)"
-                @keydown.enter.prevent="toggleMember(c.id)"
-                @keydown.space.prevent="toggleMember(c.id)"
-                @click="toggleMember(c.id)"
-              >
-                <div class="gc-member-avatar" :style="c.avatar_path ? {} : { background: 'var(--accent)' }">
-                  <img v-if="c.avatar_path" :src="c.avatar_path" class="avatar-img" alt="" />
-                  <span v-else>{{ c.display_name.charAt(0) }}</span>
-                </div>
-                <span>{{ c.display_name }}</span>
-              </div>
-            </div>
-            <span class="gc-member-hint">至少选择 2 位角色</span>
-          </div>
-          <div class="gc-record-actions">
+        <div class="gc-drawer" role="dialog" aria-modal="true" aria-label="群设置">
+          <div class="gc-drawer-head">
+            <h3>群设置</h3>
             <linshe-button
-              class="gc-btn gc-btn-undo"
-              variant="secondary"
-              :disabled="!canUndo"
-              @click="requestUndoLastRound"
+              variant="icon"
+              class="gc-drawer-close"
+              title="关闭"
+              aria-label="关闭群设置"
+              @click="showSettings = false"
             >
-撤回上一轮对话
-</linshe-button>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+            </linshe-button>
           </div>
-          <div class="gc-drawer-actions">
-            <linshe-button class="gc-btn" variant="danger" @click="onDissolve">解散群聊</linshe-button>
-            <linshe-button class="gc-btn" variant="primary" :disabled="editMemberIds.length < 2" @click="onSaveSettings">保存</linshe-button>
+
+          <div class="gc-drawer-body">
+            <label class="gc-field">
+              <span>群名称</span>
+              <linshe-input v-model="editName" type="text" maxlength="24" />
+            </label>
+            <label class="gc-field">
+              <span>群主题</span>
+              <linshe-input v-model="editTopic" type="text" maxlength="60" placeholder="（可选）大家围绕什么话题聊" />
+            </label>
+            <div class="gc-field">
+              <div class="gc-member-title"><span>群头像</span></div>
+              <div class="gc-avatar-row">
+                <div class="gc-avatar-preview" :style="groupAvatarUrl ? {} : { background: 'var(--accent)' }">
+                  <img v-if="groupAvatarUrl" :src="groupAvatarUrl" alt="" />
+                  <span v-else>{{ (store.activeGroup?.name || '群').charAt(0) }}</span>
+                </div>
+                <linshe-button size="sm" @click="openGroupAvatarPicker">设置群头像</linshe-button>
+                <linshe-button
+                  v-if="groupAvatarUrl"
+                  variant="ghost"
+                  size="sm"
+                  :disabled="groupAvatarSaving"
+                  @click="clearGroupAvatar"
+                >
+                  恢复默认
+                </linshe-button>
+              </div>
+              <span class="gc-member-hint">上传图片、直接粘贴，或从相册最近图片中选取；不设置就显示成员拼图。</span>
+            </div>
+            <div class="gc-field">
+              <div class="gc-member-title">
+                <span>群相册</span>
+                <span class="gc-temp-val">{{ groupImageCount }} 张</span>
+              </div>
+              <div class="gc-avatar-row">
+                <linshe-button size="sm" @click="showGroupAlbum = true">查看群相册</linshe-button>
+              </div>
+              <span class="gc-member-hint">汇总本群里出现过的图片，可点开大图，或按成员筛选。</span>
+            </div>
+            <div class="gc-field">
+              <div class="gc-member-title">
+                <span>温度设置</span>
+                <span class="gc-temp-val">{{ Number(editTemperature).toFixed(1) }}</span>
+              </div>
+              <linshe-slider
+                aria-label="温度设置"
+                :min="0.5" :max="1" :step="0.1"
+                v-model="editTemperature"
+                @change="onTemperatureChange"
+              />
+              <span class="gc-member-hint">群聊生成温度（所有群共享），越低越稳定、越高越有创意，默认 0.7。</span>
+            </div>
+            <div class="gc-field">
+              <div class="gc-member-title">
+                <span>携带上下文消息记忆轮数</span>
+                <span class="gc-temp-val">{{ editSummaryInterval }} 轮</span>
+              </div>
+              <linshe-slider
+                aria-label="携带上下文消息记忆轮数"
+                :min="2" :max="6" :step="1"
+                v-model="editSummaryInterval"
+                @change="onSummaryIntervalChange"
+              />
+              <span class="gc-member-hint">达到设置轮数之后将上下文压缩成总结，默认 4 轮。</span>
+            </div>
+            <div class="gc-field">
+              <div class="gc-member-title">
+                <label for="group-activity">群聊活跃度</label>
+                <span class="gc-temp-val">{{ editActivity }}</span>
+              </div>
+              <linshe-slider
+                id="group-activity" v-model="editActivity"
+                :min="1" :max="5" :step="1" :disabled="activitySaving"
+                @change="onActivityChange"
+              />
+              <span class="gc-member-hint">所有群共享，默认 2。</span>
+            </div>
+            <div class="gc-field gc-member-field">
+              <div class="gc-member-title">
+                <span>群成员</span>
+                <span>{{ editMemberIds.length }} / {{ sortedCharacters.length }}</span>
+              </div>
+              <div class="gc-member-edit">
+                <div
+                  v-for="c in sortedCharacters"
+                  :key="c.id"
+                  role="button"
+                  tabindex="0"
+                  class="gc-member-check"
+                  :class="{ picked: editMemberIds.includes(c.id) }"
+                  :aria-pressed="editMemberIds.includes(c.id)"
+                  @keydown.enter.prevent="toggleMember(c.id)"
+                  @keydown.space.prevent="toggleMember(c.id)"
+                  @click="toggleMember(c.id)"
+                >
+                  <div class="gc-member-avatar" :style="c.avatar_path ? {} : { background: 'var(--accent)' }">
+                    <img v-if="c.avatar_path" :src="c.avatar_path" class="avatar-img" alt="" />
+                    <span v-else>{{ c.display_name.charAt(0) }}</span>
+                  </div>
+                  <span>{{ c.display_name }}</span>
+                </div>
+              </div>
+              <span class="gc-member-hint">至少选择 2 位角色</span>
+            </div>
+          </div>
+
+          <div class="gc-drawer-foot">
+            <div class="gc-record-actions">
+              <linshe-button
+                class="gc-btn gc-btn-undo"
+                variant="secondary"
+                :disabled="!canUndo"
+                @click="requestUndoLastRound"
+              >
+                撤回上一轮对话
+              </linshe-button>
+            </div>
+            <div class="gc-drawer-actions">
+              <linshe-button class="gc-btn" variant="danger" @click="onDissolve">解散群聊</linshe-button>
+              <linshe-button class="gc-btn" variant="primary" :disabled="editMemberIds.length < 2" @click="onSaveSettings">保存</linshe-button>
+            </div>
           </div>
         </div>
       </div>
@@ -645,6 +658,15 @@ watch(showSettings, (open) => {
   }
 })
 
+// Esc 关闭群设置（手机端铺满整宽、点不到遮罩时靠头部关闭键与 Esc 兜底）
+function onSettingsKeydown(e) {
+  if (e.key === 'Escape') showSettings.value = false
+}
+watch(showSettings, (open) => {
+  if (open) window.addEventListener('keydown', onSettingsKeydown)
+  else window.removeEventListener('keydown', onSettingsKeydown)
+}, { immediate: true })
+
 // ── 温度设置（全局共享，写入 system_settings） ──
 
 let temperatureLoading = false
@@ -713,6 +735,7 @@ onUnmounted(() => {
   clearTimeout(autoScrollTimer)
   teardownResizeObserver()
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('keydown', onSettingsKeydown)
   store.leaveGroup()
 })
 
@@ -1370,35 +1393,63 @@ async function clearGroupAvatar() {
   flex-shrink: 0;
 }
 
-/* ── 群设置抽屉 ── */
+/* ── 群设置抽屉 ──
+   三段式布局：头部标题 / 中部滚动表项 / 底部操作区。
+   中部是唯一滚动容器，表项再往里塞也只加长它自己的滚动区，
+   底部的「撤回上一轮 / 解散群聊 / 保存」永远留在屏幕内（PC 与手机同款）。 */
 .gc-drawer-overlay {
-  position: fixed; inset: 0; z-index: 200;
-  background: rgba(0,0,0,0.35);
+  position: fixed; inset: 0; z-index: var(--z-drawer);
+  background: rgba(0, 0, 0, 0.45);
   display: flex; justify-content: flex-end;
 }
 .gc-drawer {
-  width: min(480px, 94vw); height: 100%;
+  width: min(480px, 94vw);
+  height: 100%; height: 100dvh;
   background: var(--bg-secondary);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  padding: 24px 20px;
-  padding-top: calc(24px + env(safe-area-inset-top, 0px));
+  border-left: 1px solid var(--border);
+  box-shadow: -6px 0 28px rgba(0, 0, 0, 0.1);
+  display: flex; flex-direction: column;
   overflow: hidden;
-  display: flex; flex-direction: column; gap: 16px;
   transition: transform 0.22s ease;
 }
-.gc-drawer h3 { margin: 0 0 4px; font-size: 17px; color: var(--text-bright); }
+/* 头部：标题与关闭键常驻，不跟着表项滚走 */
+.gc-drawer-head {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 18px 18px 12px;
+  padding-top: calc(18px + env(safe-area-inset-top, 0px));
+  border-bottom: 1px solid var(--border);
+}
+.gc-drawer-head h3 { margin: 0; font-size: 17px; color: var(--text-bright); }
+.gc-drawer-close { margin-left: auto; flex-shrink: 0; }
+/* 中部：全抽屉唯一的滚动区，滚到边界不把滚动传给底下的消息列表 */
+.gc-drawer-body {
+  flex: 1; min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 16px;
+  padding: 16px 18px 18px;
+  scrollbar-width: thin; scrollbar-color: rgba(var(--accent-rgb),0.35) transparent;
+}
+/* 底部：操作区常驻，并让出手势条安全区 */
+.gc-drawer-foot {
+  flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 18px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border);
+}
 .gc-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-secondary); }
 .gc-member-title {
   display: flex; align-items: center; justify-content: space-between;
   font-size: 13px; color: var(--text-secondary);
 }
-.gc-member-field { flex: 1; min-height: 0; }
+/* 成员区不再抢剩余高度：跟着表项一起滚，底部操作区才压得住 */
+.gc-member-field { flex-shrink: 0; }
 .gc-member-edit {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px;
-  flex: 1; min-height: 124px; overflow-y: auto;
+  min-height: 92px;
   border: 1px solid rgba(var(--accent-rgb),0.14); border-radius: 12px; padding: 8px;
-  scrollbar-width: thin; scrollbar-color: rgba(var(--accent-rgb),0.35) transparent;
 }
 .gc-member-check {
   min-width: 0; min-height: 92px; padding: 9px 5px 8px;
@@ -1447,6 +1498,17 @@ async function clearGroupAvatar() {
   .new-message-bubble { right:14px; bottom:12px; }
   .input-area { padding: 8px 16px; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
   .mention-panel { left: 16px; }
+
+  /* 群设置抽屉在手机上铺满整宽：表项更宽、成员格子更好按；
+     遮罩被盖满后关闭改走头部关闭键与 Esc */
+  .gc-drawer {
+    width: 100%; max-width: 100%;
+    border-left: none; box-shadow: none;
+  }
+  .gc-drawer-head { padding-left: 14px; padding-right: 14px; }
+  .gc-drawer-body { padding: 14px 14px 16px; gap: 14px; }
+  .gc-drawer-foot { padding-left: 14px; padding-right: 14px; }
+  .gc-member-edit { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

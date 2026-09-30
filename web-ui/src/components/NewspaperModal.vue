@@ -44,7 +44,7 @@
     </div>
 
     <!-- 报纸版面：一整版铺满窗口，内容压在一页内 -->
-    <article v-else class="np-paper" :class="{ 'is-past-view': !isToday }">
+    <article v-else ref="paperEl" class="np-paper" :class="{ 'is-past-view': !isToday }">
       <!-- 报头 -->
       <header class="np-masthead">
         <div class="np-mast-row">
@@ -97,8 +97,8 @@
             <figure v-if="paper.world_state.image" class="np-figure np-figure-wrap">
               <img :src="paper.world_state.image" :alt="paper.world_state.name" loading="lazy" />
             </figure>
-            <p v-if="paper.world_state.description" class="np-text np-clamp-2">{{ paper.world_state.description }}</p>
-            <p v-if="paper.world_state.news" class="np-text np-text-secondary np-clamp-3">{{ paper.world_state.news }}</p>
+            <p v-if="paper.world_state.description" class="np-text" data-np-clip>{{ paper.world_state.description }}</p>
+            <p v-if="paper.world_state.news" class="np-text np-text-secondary" data-np-clip>{{ paper.world_state.news }}</p>
           </section>
           <div class="np-col-list">
             <section
@@ -116,7 +116,7 @@
                 <img :src="item.image" :alt="item.title" loading="lazy" />
               </figure>
               <div v-else class="np-img-placeholder np-figure-wrap">{{ isToday ? '配图印刷中…' : '本期配图缺失' }}</div>
-              <p :class="['np-text', 'np-text-sm', item.image ? 'np-clamp-6' : 'np-clamp-4']">{{ item.content }}</p>
+              <p class="np-text np-text-sm" data-np-clip>{{ item.content }}</p>
             </section>
           </div>
         </div>
@@ -142,7 +142,7 @@
               <img :src="paper.character_event.image" :alt="paper.character_event.title" loading="lazy" />
             </figure>
             <div v-else class="np-img-placeholder np-lead-figure">{{ isToday ? '配图印刷中…' : '本期配图缺失' }}</div>
-            <p class="np-text np-lead-text np-clamp-5">{{ paper.character_event.content }}</p>
+            <p class="np-text np-lead-text" data-np-clip>{{ paper.character_event.content }}</p>
           </article>
         </div>
 
@@ -163,7 +163,7 @@
                 <img :src="item.image" :alt="item.title" loading="lazy" />
               </figure>
               <div v-else class="np-img-placeholder np-figure-wrap">{{ isToday ? '配图印刷中…' : '本期配图缺失' }}</div>
-              <p :class="['np-text', 'np-text-sm', item.image ? 'np-clamp-6' : 'np-clamp-4']">{{ item.content }}</p>
+              <p class="np-text np-text-sm" data-np-clip>{{ item.content }}</p>
             </section>
           </div>
         </div>
@@ -240,6 +240,7 @@ import * as api from '../api/index.js'
 import LinsheModal from './ui/LinsheModal.vue'
 import LinsheButton from './ui/LinsheButton.vue'
 import ImageLightbox from './ImageLightbox.vue'
+import { useArticleClip } from '../composables/useArticleClip.js'
 
 const NEWSPAPER_TAGLINE = '今日事 · 早知道'
 const POLL_INTERVAL_MS = 20000
@@ -367,6 +368,14 @@ const totalCount = computed(() => {
 // 普通新闻对半分到左右两栏
 const leftItems = computed(() => items.value.slice(0, Math.ceil(items.value.length / 2)))
 const rightItems = computed(() => items.value.slice(Math.ceil(items.value.length / 2)))
+
+// 头版正文压裁：装不下的一半行收成省略号（全文进详情）；换期 / 补图 / 改窗口尺寸都会重量
+const paperEl = ref(null)
+useArticleClip({
+  root: paperEl,
+  active: visible,
+  sources: [paper, isToday, leftItems, rightItems, leadAuthorAvatar, worldDismissed],
+})
 
 // 详情页内容：按 kind+index 从最新 paper 里实时取，轮询补图后详情也会跟着更新
 const detailArticle = computed(() => {
@@ -819,20 +828,14 @@ onBeforeUnmount(() => {
   margin-top: 4px;
 }
 
-/* 行数压裁：版面一页装不下的部分进详情读全文 */
-.np-clamp-2,
-.np-clamp-3,
-.np-clamp-4,
-.np-clamp-5 {
+/* 标题行数压裁（纯文字块，-webkit-box 不影响浮环绕）；
+   正文不在这里压：正文要绕着浮动配图排，只能靠 useArticleClip 量完行盒补省略号 */
+.np-clamp-2 {
   display: -webkit-box;
   -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
 }
-.np-clamp-2 { -webkit-line-clamp: 2; }
-.np-clamp-3 { -webkit-line-clamp: 3; }
-.np-clamp-4 { -webkit-line-clamp: 4; }
-.np-clamp-5 { -webkit-line-clamp: 5; }
-.np-clamp-6 { -webkit-line-clamp: 6; }
 
 /* 配图：细墨框 + 白衬。侧栏配图保持原始比例，文字半包围环绕；
    环绕方向按条目交错（左右左右），更像报纸拼版 */
@@ -911,6 +914,7 @@ onBeforeUnmount(() => {
     radial-gradient(1200px 400px at 50% -80px, rgba(255, 253, 246, 0.9), rgba(255, 253, 246, 0) 70%),
     linear-gradient(180deg, #f8f3e9 0%, #f4eddd 100%);
 }
+/* 详情页是一整张摊开的纸，滚动条会破坏纸面；照旧可滚，只是不画滚动条 */
 .np-detail-scroll {
   flex: 1;
   min-height: 0;
@@ -919,6 +923,11 @@ onBeforeUnmount(() => {
   max-width: 820px;
   margin: 0 auto;
   padding: 20px clamp(18px, 4vw, 48px) 28px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.np-detail-scroll::-webkit-scrollbar {
+  display: none;
 }
 .np-detail-bar {
   display: flex;
