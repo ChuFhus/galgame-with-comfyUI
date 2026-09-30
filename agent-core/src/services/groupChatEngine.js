@@ -37,7 +37,7 @@ import { GROUP_LOG_LABEL } from './chatLogPrompt.js';
 import { getCheckpoint, rollbackMemoriesFromRawId } from './memory/memoryRepository.js';
 import { hybridSearch } from './memorySearch.js';
 import { getTimeTag } from './timeLight.js';
-import { getGroupNewspaperBlockFor } from './newspaperService.js';
+import { takeGroupNewspaperBlockFor } from './newspaperService.js';
 import { splitText } from '../utils/sentenceSplitter.js';
 import { stripImagePromptLines, stripBracePromptBlocks, isImageRuleEcho, isImageRuleEchoStart, isPlaceholderImagePrompt } from '../utils/groupImagePrompt.js';
 import { getCurrentActivity } from './scheduleManager.js';
@@ -869,9 +869,11 @@ async function _runGroupRound(groupId, { trigger = 'user', userMessage = '', emi
   // ── 动态指令块 ──
   const directiveBlocks = [];
   directiveBlocks.push(`<time_context>${getTimeTag(new Date())}</time_context>`);
-  // 当日《小镇早知道》：世界状态 + 特稿新闻（成员含当天主角时附带点名），群里全员共享视角
+  // 当日《邻舍日报》：世界状态 + 特稿新闻（成员含当天主角时附带点名），群里全员共享视角。
+  // 限额发放：主角所在群只看前 GROUP_INJECT_ROUNDS 轮，用满后当天不再注入——
+  // 每轮都提醒"今早报纸写了谁"会把特稿主角反复提起，报纸只该当开场谈资。
   try {
-    const newspaperBlock = getGroupNewspaperBlockFor(group);
+    const newspaperBlock = takeGroupNewspaperBlockFor(group);
     if (newspaperBlock) directiveBlocks.push(newspaperBlock);
   } catch (err) {
     console.warn('[group] newspaper block unavailable:', err.message);

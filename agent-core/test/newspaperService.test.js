@@ -342,6 +342,8 @@ test('setWorldStateDismissed toggles today paper world state on and off', () => 
   db.prepare('DELETE FROM town_newspapers').run();
   db.prepare(`INSERT INTO characters (name, display_name, base_prompt) VALUES ('groupLead', '群主小姐', 'x')`).run();
   const leadId = db.prepare(`SELECT id FROM characters WHERE name = 'groupLead'`).get().id;
+  db.prepare(`INSERT INTO group_chats (name) VALUES ('日报开关测试群')`).run();
+  const groupId = db.prepare(`SELECT id FROM group_chats WHERE name = '日报开关测试群'`).get().id;
   db.prepare(`
     INSERT INTO town_newspapers (publish_date, name, edition, items_json, character_id, character_event_json, world_state_json, world_dismissed, moment_done, complaint_after)
     VALUES (?, '邻舍日报', 1, '[]', ?, ?, ?, 0, 0, NULL)
@@ -353,18 +355,19 @@ test('setWorldStateDismissed toggles today paper world state on and off', () => 
 
   // 主角不在群里 → 整块不注入（2026-09-29 起的口径：群成员聊"特稿里陌生人的事"只会出戏）
   assert.equal(
-    svc.getGroupNewspaperBlockFor({ members: [] }), '',
+    svc.takeGroupNewspaperBlockFor({ id: groupId, members: [] }), '',
     'group without the featured character must get no newspaper block at all',
   );
   // 主角在群里 → 注入，含世界状态段与特稿新闻
-  const withLead = svc.getGroupNewspaperBlockFor({ members: [{ id: leadId, display_name: '群主小姐' }] });
+  const group = { id: groupId, members: [{ id: leadId, display_name: '群主小姐' }] };
+  const withLead = svc.takeGroupNewspaperBlockFor(group);
   assert.ok(withLead.includes('今日状态'), 'group block must carry the world state before dismissal');
   assert.ok(withLead.includes('今日新闻'), 'group block must carry the featured news');
   assert.ok(withLead.includes('群主小姐'), 'featured member must be named in the group block');
 
   assert.equal(svc.setWorldStateDismissed(true), true);
   assert.equal(svc.getWorldStateBlock(), '', 'dismissed world state must not inject into chat anymore');
-  const groupBlock = svc.getGroupNewspaperBlockFor({ members: [{ id: leadId, display_name: '群主小姐' }] });
+  const groupBlock = svc.takeGroupNewspaperBlockFor(group);
   assert.ok(!groupBlock.includes('今日状态'), 'dismissed world state must not inject into group chats');
   assert.ok(groupBlock.includes('今日新闻'), 'featured news stays in the group block after dismissal');
   const row = db.prepare('SELECT world_dismissed FROM town_newspapers WHERE publish_date = ?').get(getLocalDateKey());
@@ -377,7 +380,68 @@ test('setWorldStateDismissed toggles today paper world state on and off', () => 
   assert.equal(svc.setWorldStateDismissed(false), true);
 
   db.prepare('DELETE FROM town_newspapers').run();
+  db.prepare(`DELETE FROM group_chats WHERE id = ?`).run(groupId);
   db.prepare(`DELETE FROM characters WHERE name = 'groupLead'`).run();
+});
+
+test('group newspaper block stops after GROUP_INJECT_ROUNDS rounds for the same paper', () => {
+  const db = getDb();
+  db.prepare('DELETE FROM town_newspapers').run();
+  db.prepare(`INSERT INTO characters (name, display_name, base_prompt) VALUES ('capLead', '限额小姐', 'x')`).run();
+  db.prepare(`INSERT INTO characters (name, display_name, base_prompt) VALUES ('capBystander', '路人先生', 'x')`).run();
+  const leadId = db.prepare(`SELECT id FROM characters WHERE name = 'capLead'`).get().id;
+  const bystanderId = db.prepare(`SELECT id FROM characters WHERE name = 'capBystander'`).get().id;
+  db.prepare(`INSERT INTO group_chats (name) VALUES ('限额测试群')`).run();
+  const groupId = db.prepare(`SELECT id FROM group_chats WHERE name = '限额测试群'`).get().id;
+
+  const insertPaper = db.prepare(`
+    INSERT INTO town_newspapers (publish_date, name, edition, items_json, character_id, character_event_json, world_state_json, world_dismissed, moment_done, complaint_after)
+    VALUES (?, '邻舍日报', ?, '[]', ?, ?, NULL, 0, 0, NULL)
+  `);
+  insertPaper.run(getLocalDateKey(), 1, leadId,
+    JSON.stringify({ title: '限额小姐的大事件', content: '特稿正文', note: 'n' }));
+  const paperId = db.prepare(`SELECT id FROM town_newspapers WHERE publish_date = ?`).get(getLocalDateKey()).id;
+
+  const group = { id: groupId, members: [{ id: leadId, display_name: '限额小姐' }] };
+  // 主角不在群：不发块、也不消耗轮数（之后主角入群仍能拿到完整的 4 轮）
+  assert.equal(svc.takeGroupNewspaperBlockFor({ id: groupId, members: [{ id: bystanderId, display_name: '路人先生' }] }), '');
+  assert.equal(
+    db.prepare('SELECT newspaper_rounds_used FROM group_chats WHERE id = ?').get(groupId).newspaper_rounds_used, 0,
+    'a group without the featured member must not burn rounds',
+  );
+
+  for (let round = 1; round <= svc.GROUP_INJECT_ROUNDS; round++) {
+    assert.ok(
+      svc.takeGroupNewspaperBlockFor(group).includes('<newspaper_today>'),
+      `round ${round} must still carry the newspaper block`,
+    );
+  }
+  // 第 5 轮起当天不再注入（用户反馈：主角在群里被反复提起）
+  assert.equal(svc.takeGroupNewspaperBlockFor(group), '', 'after the limit the block must be gone for the day');
+  const usage = db.prepare('SELECT newspaper_paper_id, newspaper_rounds_used FROM group_chats WHERE id = ?').get(groupId);
+  assert.equal(usage.newspaper_paper_id, paperId, 'usage is recorded against the current paper');
+  assert.equal(usage.newspaper_rounds_used, svc.GROUP_INJECT_ROUNDS, 'used rounds stop at the limit');
+  // 记账落库：重启/换进程也不会把同一期报纸重新发放一遍
+  assert.equal(db.prepare('SELECT newspaper_rounds_used FROM group_chats WHERE id = ?').get(groupId).newspaper_rounds_used, svc.GROUP_INJECT_ROUNDS);
+
+  // 次日新一期（同一天同一行被换掉 → 新 paper_id）：计数自动归零，重新发放
+  db.prepare('DELETE FROM town_newspapers').run();
+  insertPaper.run(getLocalDateKey(), 2, leadId,
+    JSON.stringify({ title: '限额小姐的明日事件', content: '特稿正文', note: 'n' }));
+  const nextPaperId = db.prepare(`SELECT id FROM town_newspapers WHERE publish_date = ?`).get(getLocalDateKey()).id;
+  assert.notEqual(nextPaperId, paperId, 'a fresh edition must have its own paper id');
+  assert.ok(
+    svc.takeGroupNewspaperBlockFor(group).includes('<newspaper_today>'),
+    'a new paper re-arms the block',
+  );
+  assert.equal(
+    db.prepare('SELECT newspaper_rounds_used FROM group_chats WHERE id = ?').get(groupId).newspaper_rounds_used, 1,
+    'rounds restart from zero for the new paper',
+  );
+
+  db.prepare('DELETE FROM town_newspapers').run();
+  db.prepare(`DELETE FROM group_chats WHERE id = ?`).run(groupId);
+  db.prepare(`DELETE FROM characters WHERE name IN ('capLead', 'capBystander')`).run();
 });
 
 test('listNewspaperEditions and getNewspaperByDate support past edition browsing', () => {

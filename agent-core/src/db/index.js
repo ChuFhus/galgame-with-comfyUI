@@ -586,6 +586,10 @@ function initSchema(db) {
       last_seen_at DATETIME,
       rag_last_extracted_raw_id INTEGER DEFAULT 0,
       rag_user_rounds_pending INTEGER DEFAULT 0,
+      -- 《邻舍日报》群聊注入记账：newspaper_paper_id 是已计数的报纸 id（换期即重置），
+      -- newspaper_rounds_used 是该群对本期报纸已注入的轮数（限额见 newspaperService.GROUP_INJECT_ROUNDS）
+      newspaper_paper_id INTEGER,
+      newspaper_rounds_used INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -2574,6 +2578,16 @@ function migrateGroupChatSchema(db) {
       console.log('[db] Added group_chats.idle_budget column (default 2)');
     }
     db.exec(`UPDATE group_chats SET idle_budget = 2 WHERE idle_budget IS NULL OR idle_budget <= 0`);
+
+    // 《邻舍日报》群聊注入轮数记账（报纸块只在主角所在群的前 4 轮注入，见 newspaperService）
+    if (!groupCols.find(c => c.name === 'newspaper_paper_id')) {
+      db.exec(`ALTER TABLE group_chats ADD COLUMN newspaper_paper_id INTEGER`);
+      console.log('[db] Added group_chats.newspaper_paper_id column');
+    }
+    if (!groupCols.find(c => c.name === 'newspaper_rounds_used')) {
+      db.exec(`ALTER TABLE group_chats ADD COLUMN newspaper_rounds_used INTEGER DEFAULT 0`);
+      console.log('[db] Added group_chats.newspaper_rounds_used column');
+    }
 
     // main v2.4 beta 曾将群聊提取边界保存在 group_chats；升级后只回填到 v2 checkpoint。
     // 同时兼容更早仅通过 source_msg_id 关联 raw 的记忆，且绝不回退已有 checkpoint。

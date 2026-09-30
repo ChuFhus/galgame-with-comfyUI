@@ -6,7 +6,8 @@
  *     由 LLM 依据 <world_setting> 演算，每条配一幅插画
  *   - 15% 概率出现一条"世界状态"（影响全镇所有人，当天生效）；
  *     注入位置与道具 buff 相同（chat.js 稳定块[1]）
- *   - 绑定角色的特稿会在当天注入：该角色的私聊动态块、其所在群聊的轮次指令，
+ *   - 绑定角色的特稿会在当天注入：该角色的私聊动态块、其所在群聊的轮次指令（群聊侧限额
+ *     GROUP_INJECT_ROUNDS 轮，之后当天不再注入，避免特稿主角被反复提起），
  *     并驱动该角色当天额外发一条吐槽朋友圈（momentScheduler 消费 complaint_after）
  *
  * 纯函数（normalizeNewspaperDraft / build*Block / buildComplaintTopic 等）导出供测试。
@@ -28,6 +29,9 @@ import { ITEM_EFFECTS, WORLD_OUTFIT_CHANCE } from './itemService.js';
 export const NEWSPAPER_NAME = '邻舍日报';
 export const NEWSPAPER_TAGLINE = '今日事 · 早知道';
 export const WORLD_STATE_PROBABILITY = 0.15;
+// 群聊注入限额：报纸块只在该群的前 4 轮群聊里注入，之后当天不再出现。
+// 天天每轮都提醒一次"今早的报纸写了谁"，特稿主角会被反复提起；限额让它只当开场谈资。
+export const GROUP_INJECT_ROUNDS = 4;
 // 每天零点起生成当天报纸：replyQueueScheduler 的第一个调度 tick 触发（内部自带去重/节流/错误兜底）
 // 注：日程已不注入报纸素材，无需再等清晨日程刷新；零点刷新让"昨天的预告"与"今天的事"严格对应
 export const GENERATION_HOUR = 0;
@@ -440,20 +444,46 @@ export function getCharacterEventBlockFor(characterId) {
   return buildCharacterEventBlock(null, safeParseJson(row.character_event_json));
 }
 
-/** groupChatEngine.js 注入口：该群的报纸块。主角不在群里 → 整块不注入：
- *  群成员对着"特稿里陌生人的事"聊天只会出戏；世界状态不受此影响——
- *  它仍经私聊 chat.js 稳定块作用于每个角色（那是全镇效果，与群成员构成无关） */
-export function getGroupNewspaperBlockFor(group) {
+/**
+ * 记账：本轮该群还能不能携带报纸块。能则把「该群对本期报纸已用轮数」+1 并落库，返回 true。
+ * 换期（paper_id 不同，即次日新报纸）自动从 0 重算；群行不存在（已删群 / 裸对象）按不发放处理。
+ */
+function consumeGroupNewspaperRound(groupId, paperId) {
+  const db = getDb();
+  const row = db.prepare('SELECT newspaper_paper_id, newspaper_rounds_used FROM group_chats WHERE id = ?').get(groupId);
+  if (!row) return false;
+  const samePaper = Number(row.newspaper_paper_id) === Number(paperId);
+  const used = samePaper ? (row.newspaper_rounds_used || 0) : 0;
+  if (used >= GROUP_INJECT_ROUNDS) return false;
+  db.prepare('UPDATE group_chats SET newspaper_paper_id = ?, newspaper_rounds_used = ? WHERE id = ?')
+    .run(paperId, used + 1, groupId);
+  console.log(`[newspaper] group ${groupId} got the newspaper block (round ${used + 1}/${GROUP_INJECT_ROUNDS} of paper ${paperId})`);
+  return true;
+}
+
+/** groupChatEngine.js 注入口：该群的报纸块（限额发放，用满 GROUP_INJECT_ROUNDS 轮后当天不再注入）。
+ *
+ *  限额：报纸块只在该群的前 GROUP_INJECT_ROUNDS 轮群聊里出现（user/idle/lull/opening 都算一轮），
+ *  第 5 轮起当天不再注入——否则每轮都在提醒模型"今早报纸写了谁"，特稿主角会被反复提起。
+ *  轮数按 (群, 报纸) 持久化在 group_chats.newspaper_paper_id / newspaper_rounds_used：
+ *  次日新一期自动从 0 重新计，进程重启也不会重新发放；
+ *  本轮没真正产出内容（buildGroupNewspaperBlock 返回空）不消耗轮数。
+ *
+ *  主角不在群里 → 整块不注入（同样不消耗轮数）：群成员对着"特稿里陌生人的事"聊天只会出戏；
+ *  世界状态不受此影响——它仍经私聊 chat.js 稳定块作用于每个角色（那是全镇效果，与群成员构成无关）。 */
+export function takeGroupNewspaperBlockFor(group) {
   const row = getTodayNewspaper();
-  if (!row?.character_id) return '';
-  const memberIds = (group?.members || []).map(m => String(m.id));
-  const featured = group.members.find(m => String(m.id) === String(row.character_id));
+  if (!row?.character_id || !group?.id) return '';
+  const featured = (group.members || []).find(m => String(m.id) === String(row.character_id));
   if (!featured) return '';
-  return buildGroupNewspaperBlock({
+  const block = buildGroupNewspaperBlock({
     worldState: row.world_dismissed ? null : safeParseJson(row.world_state_json),
     characterEvent: safeParseJson(row.character_event_json),
     featuredMemberName: featured.display_name || null,
   });
+  if (!block) return '';
+  if (!consumeGroupNewspaperRound(group.id, row.id)) return '';
+  return block;
 }
 
 // ── 朋友圈吐槽帖（momentScheduler 消费） ──
