@@ -60,9 +60,9 @@ longTest('T07/M5 七天 + 十四天场景：三条闭环与目标技能长期稳
   while (now < T0 + fourteenDaysMs && ticks++ < 2400) await step();
   assert.ok(now >= T0 + fourteenDaysMs, '虚拟时钟应走满十四天');
 
-  // 生活闭环：需求全程有界；进食动作发生过且恢复来源幂等
+  // 生活闭环：需求全程有界；自主进食发生过并完成（动作终态唯一，效果在结算路径恰好一次写入）
   assertNeedsBounded(sim);
-  const eatSettled = db.prepare(`SELECT count(*) n FROM town_need_effects WHERE source_key LIKE 'life_eat:%'`).get().n;
+  const eatSettled = db.prepare(`SELECT count(*) n FROM town_actions WHERE type='life_eat' AND status='completed'`).get().n;
   assert.ok(eatSettled > 0, '七天里应发生自主进食');
   // 经济闭环：工资与餐费交易存在；账本守恒
   console.log('DBG tx:', JSON.stringify(db.prepare(`SELECT reason_code, count(*) n FROM economy_transactions GROUP BY reason_code`).all()));

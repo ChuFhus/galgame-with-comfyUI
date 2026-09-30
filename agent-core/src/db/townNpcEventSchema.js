@@ -28,7 +28,8 @@ export function migrateTownNpcEventSchema(db) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       expires_at DATETIME NOT NULL,
       last_interaction_at DATETIME,
-      error_message TEXT
+      error_message TEXT,
+      narrative_json TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_town_npc_event_status ON town_npc_events(npc_id, status);
     -- 与 character_events 相同的并发口径：每位镇民同时最多一个活跃奇遇
@@ -52,8 +53,18 @@ export function migrateTownNpcEventSchema(db) {
       world_epoch INTEGER,
       location_key TEXT,
       created_at DATETIME,
-      ended_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      ended_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      narrative_json TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_town_npc_event_history_npc ON town_npc_event_history(npc_id, ended_at);
   `);
+
+  // M7 叙事增强（2026-10-01 接线）：ambient 奇遇创建时的角色对白，纯表现层（townNarrativeService）。
+  // 老库幂等补列；历史表同列，归档时随行携带，历史卡片也能看到当时的对白。
+  for (const table of ['town_npc_events', 'town_npc_event_history']) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (cols.length && !cols.find(c => c.name === 'narrative_json')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN narrative_json TEXT`);
+    }
+  }
 }

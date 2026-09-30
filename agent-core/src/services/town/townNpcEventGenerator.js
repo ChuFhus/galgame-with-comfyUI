@@ -16,6 +16,7 @@ import { config } from '../../config.js';
 import { getTimeTag, getLightNoteWithWeather } from '../timeLight.js';
 import { getWorldIntegrationRule } from '../../builtinRules.js';
 import { extractFirstJson, repairJson } from '../eventGenerator.js';
+import { createTownNarrativeService } from './townNarrativeService.js';
 import {
   broadcastNewEvent,
   broadcastEventUpdate,
@@ -25,6 +26,11 @@ import {
 export const TOWN_NPC_EVENT_TYPE_KEY = 'town.custom';
 export const TOWN_NPC_AMBIENT_EVENT_TYPE_KEY = 'town.ambient';
 export const TOWN_NPC_EVENT_DURATION_MIN = 60;
+
+// M7 自动叙事（town-update.md §6.8）：ambient 奇遇（镇民自发场景 + 导演邀请）创建时，
+// 给已落库的场景补一段角色对白。纯表现层——契约不过/预算耗尽/零模型一律不落
+// narrative_json，卡片维持纯描述；叙事永不参与事件结算。
+const townNarrative = createTownNarrativeService({ narrativeConfig: config.town.narrative });
 
 // ── ID 与素材工具 ──
 
@@ -53,11 +59,17 @@ function toISO(dt) {
   return dt.replace(' ', 'T') + '.000Z';
 }
 
+/** narrative_json → 前端对话块（解析失败视同无叙事，不阻塞卡片渲染）。 */
+function narrativeOf(row) {
+  if (!row?.narrative_json) return null;
+  try { return JSON.parse(row.narrative_json); } catch { return null; }
+}
+
 /** 活跃事件行 → 前端 EventCard 可直接消费的 DTO（id 加 town: 前缀避免与角色事件撞号）。 */
 export function townNpcEventDto(row, npcName = null) {
   if (!row) return null;
   const npc = npcName ?? getDb().prepare('SELECT display_name FROM town_npcs WHERE id=?').get(row.npc_id)?.display_name;
-  return {
+  const dto = {
     ...row,
     id: townNpcEventRef(row.id),
     npc_event: true,
@@ -68,13 +80,16 @@ export function townNpcEventDto(row, npcName = null) {
     created_at: toISO(row.created_at),
     expires_at: toISO(row.expires_at),
     last_interaction_at: row.last_interaction_at ? toISO(row.last_interaction_at) : null,
+    narrative: narrativeOf(row),
   };
+  delete dto.narrative_json; // 原始串不透出，前端只读解析后的 narrative
+  return dto;
 }
 
 /** 历史事件行 → 前端 DTO（与 event_history 的 final_image 口径对齐）。 */
 export function townNpcEventHistoryDto(row) {
   if (!row) return null;
-  return {
+  const dto = {
     ...row,
     image: row.final_image,
     id: townNpcEventRef(row.id),
@@ -87,7 +102,10 @@ export function townNpcEventHistoryDto(row) {
     expires_at: toISO(row.ended_at),
     created_at: row.created_at ? toISO(row.created_at) : null,
     last_interaction_at: null,
+    narrative: narrativeOf(row),
   };
+  delete dto.narrative_json;
+  return dto;
 }
 
 function npcPersonaBlock(npc, playerName, playerAppearance) {
@@ -359,6 +377,36 @@ ${worldPenetrationLine}
     return id;
   }).immediate();
 
+  // 自动叙事（M7）：两条 ambient 生成路径（自发升级/导演邀请）都已按「聚焦图 + 自动 LLM」
+  // 门控后才走到这里，这里只补预算与契约（narrate 内部处理）。手动玩家邀请（town.custom）不叙事。
+  if (isAmbient && config.features.townLLM && config.features.townAutoLLM) {
+    try {
+      const { source, narrative } = await townNarrative.narrate({
+        sourceEventId: townNpcEventRef(eventId),
+        factsVersion: 1,
+        facts: {
+          text: `事件「${eventData.title}」：${eventData.description}`,
+          fallbackSummary: eventData.description.slice(0, 80),
+          fallbackLine: `${npc.display_name}正忙着手头的事。`,
+        },
+        allowedSpeakers: [
+          { actorId: `npc:${npc.id}`, displayName: npc.display_name },
+          ...(companion ? [{ actorId: `companion:${npc.id}`, displayName: companion.name }] : []),
+        ],
+        choices: [], // 对白增强口径：不重标选项，玩家按钮仍用 choice_a/b
+        worldId: options.worldId ?? 'town',
+        nowUtcMs: now.getTime(),
+        mode: 'auto',
+        chatSync,
+      });
+      if (source === 'model') {
+        db.prepare('UPDATE town_npc_events SET narrative_json = ? WHERE id = ?').run(JSON.stringify(narrative), eventId);
+      }
+    } catch (err) {
+      console.warn('[townNpcEventGen] narrative enhancement skipped:', err?.message || err);
+    }
+  }
+
   const event = db.prepare(`SELECT * FROM town_npc_events WHERE id = ?`).get(eventId);
   broadcastNewEvent(townNpcEventDto(event));
 
@@ -592,8 +640,8 @@ function archiveNpcEvent(npc, event, outcome, conclusionData) {
   db.transaction(() => {
     db.prepare(`
     INSERT INTO town_npc_event_history (id, npc_id, event_type_key, title, description, final_image, summary, conclusion,
-      choice_history, total_branches, engaged, outcome, world_id, world_epoch, location_key, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      choice_history, total_branches, engaged, outcome, world_id, world_epoch, location_key, created_at, narrative_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
       event.id,
       npc.id, event.event_type_key,
@@ -604,6 +652,7 @@ function archiveNpcEvent(npc, event, outcome, conclusionData) {
       event.engaged, outcome,
       event.world_id, event.world_epoch, event.location_key,
       event.created_at,
+      event.narrative_json ?? null,
     );
     db.prepare(`DELETE FROM town_npc_events WHERE id = ?`).run(event.id);
   }).immediate();

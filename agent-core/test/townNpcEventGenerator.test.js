@@ -195,3 +195,85 @@ test('后台图的镇民奇遇到点直接模板结题：归档 + 广播，且�
   assert.equal(payload.conclusion, out.conclusion);
   assert.equal(payload.character_id, null);
 });
+
+// ── M7 自动叙事接线（2026-10-01）：ambient 奇遇创建时补角色对白 ──
+test('M7 自动叙事：ambient 奇遇开场补对白；契约不过/零模型不落 narrative，归档随行', async t => {
+  const db = getDb();
+  t.after(() => closeDb());
+
+  // 隔离：同文件先前 ambient 用例已在叙事缓存留下同 id 的模板回退（缓存键只含来源事件与
+  // 说话者 id，而每个用例的 :memory: 库自增 id 都从 1 起）——用占位行推高自增 id，
+  // 保证本用例的 sourceEventId 不撞缓存、真走模型路径。
+  for (const name of ['占位甲', '占位乙']) {
+    db.prepare('INSERT INTO town_npcs(map_id, display_name) VALUES(1, ?)').run(name);
+    db.prepare("INSERT INTO town_npc_events(npc_id, event_type_key, expires_at) VALUES((SELECT id FROM town_npcs WHERE display_name=?), 'town.custom', '2100-01-01T00:00:00')").run(name);
+  }
+
+  // 1) 模型输出过契约 → narrative_json 落库、DTO 透出对话行、归档随行
+  const npc = fakeNpc(db);
+  let calls = 0;
+  const llmGood = { chatSync: async msgs => {
+    calls += 1;
+    if (calls === 1) {
+      return JSON.stringify({ title: '面香飘满了街口。', description: '掌柜老周在灶前忙个不停，汤头的香气顺着街口飘出去。', prompt: '场景图', choiceA: '进店吃一碗', choiceB: '先去别处逛逛' });
+    }
+    const sourceEventId = String(msgs.at(-1).content).match(/【事件 ID】(\S+)/)?.[1];
+    assert.ok(sourceEventId?.startsWith('town:'), '叙事提示词应带已落库事件的 ID');
+    return JSON.stringify({
+      sourceEventId,
+      summary: '掌柜老周的面馆香气飘满街口，路过的人纷纷放慢了脚步。',
+      lines: [{ speakerActorId: `npc:${npc.id}`, text: '今天的汤头熬得格外浓，可别错过了。' }],
+      choices: [],
+    });
+  } };
+  const event = await gen.generateTownNpcEvent(npc, {
+    ambient: true, companionNpc: { name: '爱走的阿快', appearance: '', persona: '' },
+    worldId: 'narr-a',
+    llm: llmGood, image: noImage,
+  });
+  assert.equal(calls, 2, 'ambient 奇遇应在事件生成后追加一次叙事调用');
+  const stored = JSON.parse(event.narrative_json);
+  assert.equal(stored.lines[0].speakerActorId, `npc:${npc.id}`);
+  const dto = gen.townNpcEventDto(event);
+  assert.equal(dto.narrative.lines[0].displayName, '理发师小孙');
+  assert.equal(dto.narrative_json, undefined, '原始串不透出，前端只读解析后的 narrative');
+  await gen.concludeTownNpcEvent(npc, event, 'completed',
+    { llm: fakeLlm({ conclusion: '面馆的一天结束了。', summary: '香气散去，面馆打烊。' }), image: noImage });
+  const hist = db.prepare('SELECT * FROM town_npc_event_history WHERE id=?').get(event.id);
+  assert.equal(JSON.parse(hist.narrative_json).lines[0].text, '今天的汤头熬得格外浓，可别错过了。', '归档应携带叙事');
+  assert.equal(gen.townNpcEventHistoryDto(hist).narrative.lines.length, 1);
+
+  // 2) 自动 LLM 关闭 → 只有事件生成一次调用，不落 narrative（零模型卡片维持纯描述）
+  const npc2 = fakeNpc(db);
+  config.features.townAutoLLM = false;
+  try {
+    let calls2 = 0;
+    const event2 = await gen.generateTownNpcEvent(npc2, {
+      ambient: true, companionNpc: { name: '阿快', appearance: '', persona: '' },
+      worldId: 'narr-b',
+      llm: { chatSync: async () => { calls2 += 1; return JSON.stringify({ title: '茶摊的水开了。', description: '描述描述描述描述描述描述描述描述描述描述。', prompt: '图', choiceA: 'A', choiceB: 'B' }); } },
+      image: noImage,
+    });
+    assert.equal(calls2, 1, '零模型不发起叙事调用');
+    assert.equal(event2.narrative_json ?? null, null);
+  } finally {
+    config.features.townAutoLLM = true;
+  }
+
+  // 3) 契约不过（未知说话人）→ 叙事重试 2 次后模板回退，不落 narrative（共 1+2 次调用）
+  const npc3 = fakeNpc(db);
+  let calls3 = 0;
+  const llmBad = { chatSync: async msgs => {
+    calls3 += 1;
+    if (calls3 === 1) return JSON.stringify({ title: '巷口的棋局散了。', description: '描述描述描述描述描述描述描述描述描述描述。', prompt: '图', choiceA: 'A', choiceB: 'B' });
+    const sourceEventId = String(msgs.at(-1).content).match(/【事件 ID】(\S+)/)?.[1];
+    return JSON.stringify({ sourceEventId, summary: '这是一个足够长的摘要，超过二十个字的要求。是的。', lines: [{ speakerActorId: 'stranger', text: '这不是允许的说话人。' }], choices: [] });
+  } };
+  const event3 = await gen.generateTownNpcEvent(npc3, {
+    ambient: true, companionNpc: { name: '阿快', appearance: '', persona: '' },
+    worldId: 'narr-c',
+    llm: llmBad, image: noImage,
+  });
+  assert.equal(calls3, 3, '叙事最多重试 maxAttempts 次');
+  assert.equal(event3.narrative_json ?? null, null, '模板回退不落 narrative_json');
+});

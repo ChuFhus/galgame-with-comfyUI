@@ -92,6 +92,13 @@
                   <div v-if="i > 0" class="choice-made-text">「{{ step.choice_label }}」</div>
                 </div>
                 <div class="branch-desc">{{ step.summary }}</div>
+                <!-- M7 叙事增强：开场场景的角色对白（ambient 奇遇，模型过契约才存在，缺失即不渲染） -->
+                <div v-if="i === 0 && narrativeLines.length" class="branch-narrative">
+                  <div v-for="(line, li) in narrativeLines" :key="li" class="narrative-line">
+                    <span class="narrative-speaker">{{ line.displayName }}</span>
+                    <span class="narrative-text">{{ line.text }}</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -249,6 +256,12 @@ const countdownText = computed(() => {
 const choiceHistory = computed(() => {
   if (Array.isArray(props.event.choice_history)) return props.event.choice_history
   return []
+})
+
+// M7 叙事增强：ambient 奇遇开场场景的角色对白（后端已过契约校验的模型输出，缺失则不渲染）
+const narrativeLines = computed(() => {
+  const lines = props.event?.narrative?.lines
+  return Array.isArray(lines) ? lines.filter(l => l?.displayName && l?.text) : []
 })
 
 const currentImage = computed(() => {
@@ -748,6 +761,21 @@ watch(isExpired, (val) => {
 .branch-desc {
   font-size: 15px; line-height: 1.75; color: var(--text-bright);
 }
+
+/* ── M7 叙事增强：开场角色对白（与 branch-desc 同一 token 语言） ── */
+.branch-narrative {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-left: 2.5px solid rgba(var(--accent-rgb),0.35);
+  background: rgba(var(--accent-rgb),0.04);
+  border-radius: 0 8px 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.narrative-line { font-size: 13.5px; line-height: 1.65; }
+.narrative-speaker { color: rgba(var(--accent-rgb),0.85); font-weight: 600; margin-right: 8px; }
+.narrative-text { color: var(--text-bright); opacity: 0.85; }
 
 /* ── "选择了" 框体 ── */
 .choice-made-box {
