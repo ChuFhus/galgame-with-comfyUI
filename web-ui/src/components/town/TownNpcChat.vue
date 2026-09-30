@@ -3,6 +3,8 @@
     :player-portrait-url="playerPortraitUrl" :messages="messages" :loading="loading" :sending="sending"
     :blocked="blocked || serviceBusy || admissionBusy || giftBusy || interactionBusy" :status="serviceBusy || admissionBusy ? '正在提供服务，请稍后再交谈。' : ''" :error="error" :retryable="retryable" :draft-restore="draftRestore"
     :chat-active="chatActive" :actions="actions" @action="onAction"
+    :status-line="statusLine" :activity="activity" :activity-loading="activityLoading" :activity-loaded="activityLoaded"
+    @fetch-activity="$emit('fetch-activity')" @open-status="$emit('open-status')"
     @send="send" @retry="retry" @reload="load" @close="$emit('close')">
     <template #message="{ message }">
       <p>{{ message.content }}</p>
@@ -26,8 +28,10 @@ import { npcTurnKey, getNpcPendingTurn, createNpcPendingTurn, forgetNpcPendingTu
 import TownDialogueStage from './TownDialogueStage.vue'
 import TownResidentActions from './TownResidentActions.vue'
 import TownVnChoice from './TownVnChoice.vue'
-const props = defineProps({ npcId: { type: Number, required: true }, displayName: String, playerName: String, worldId: String, worldEpoch: Number, serviceBusy: Boolean })
-const emit = defineEmits(['close', 'character-chat', 'context-invalid', 'story'])
+const props = defineProps({ npcId: { type: Number, required: true }, displayName: String, playerName: String, worldId: String, worldEpoch: Number, serviceBusy: Boolean,
+  statusLine: { type: String, default: '' }, activity: { type: Array, default: () => [] }, activityLoading: Boolean, activityLoaded: Boolean,
+ })
+const emit = defineEmits(['close', 'character-chat', 'context-invalid', 'story', 'fetch-activity', 'open-status'])
 const interactionBusy = ref(false)
 // 对话模式：点「聊聊近况」后才出现输入框与聊天记录，其余功能长条先收起
 const chatActive = ref(false)

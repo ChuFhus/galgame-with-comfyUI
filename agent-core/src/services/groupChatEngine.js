@@ -28,7 +28,7 @@ import { countCompletedGroupRounds } from './groupRoundCounter.js';
 import { generateImage, getLastWorkflowMode } from './imageSkill.js';
 import { charArtistOverrideWithFallback } from './characterImageOpts.js';
 import { buildCharacterPersona } from './characterPersona.js';
-import { buildGroupUserMomentContext } from './privateMomentContext.js';
+import { buildGroupUserMomentContext, buildMomentCommentLines } from './privateMomentContext.js';
 import { RAG_TIMEOUT_FAST_MS } from './imagePromptKnowledge.js';
 import { saveBase64Image, deleteImageFileByUrl } from './imagePaths.js';
 import { maybeSummarize, getRecentSummaries } from './summarizer.js';
@@ -446,7 +446,7 @@ export function buildGroupContext(group, directiveBlocks = []) {
   return messages;
 }
 
-// ── 后台闲聊上下文：注入全体群员当前日程 + 上次群聊后的新朋友圈 ──
+// ── 后台闲聊上下文：注入全体群员当前日程 + 上次群聊后的新朋友圈（含评论区）──
 
 function buildIdleContextBlock(group) {
   const db = getDb();
@@ -473,13 +473,18 @@ function buildIdleContextBlock(group) {
 
     // 上次群聊之后该群员最新一条朋友圈（没有则不传）
     if (lastChatAt) {
-      const post = db.prepare(`
-        SELECT content FROM moment_posts
-        WHERE character_id = ? AND status = 'done' AND created_at > ?
-        ORDER BY id DESC LIMIT 1
-      `).get(m.id, lastChatAt);
+      const post = db.prepare(
+        `SELECT id, content FROM moment_posts
+         WHERE character_id = ? AND status = 'done' AND created_at > ?
+         ORDER BY id DESC LIMIT 1`
+      ).get(m.id, lastChatAt);
       if (post?.content) {
-        momentLines.push(`「${m.display_name}」发了朋友圈：「${post.content.slice(0, 100)}」`);
+        let line = `【${m.display_name}】发了朋友圈：「${post.content.slice(0, 100)}」`;
+        const commentLines = buildMomentCommentLines(db, post.id, config.user.nickname || '用户');
+        if (commentLines.length > 0) {
+          line += `\n  评论区：\n${commentLines.join('\n')}`;
+        }
+        momentLines.push(line);
       }
     }
   }

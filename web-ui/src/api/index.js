@@ -1454,6 +1454,19 @@ export function townViewerHeartbeat() {
   return jsonRequest(`${BASE}/town/viewer/heartbeat`, townJson('POST'))
 }
 
+// 居民详细状态（需求/心情/目标/技能/最近来往，只读展示层）
+export function fetchTownActorStatus(actorId) {
+  return jsonRequest(`${BASE}/town/actors/${encodeURIComponent(actorId)}/status`)
+}
+
+// 居民活动流水（只读展示层）：全镇信息流（左上角浮窗/动态面板）+ 单居民行动记录
+export function fetchTownActivity(limit = 40) {
+  return jsonRequest(`${BASE}/town/activity?limit=${encodeURIComponent(limit)}`)
+}
+export function fetchTownActorActivity(actorId, limit = 100) {
+  return jsonRequest(`${BASE}/town/actors/${encodeURIComponent(actorId)}/activity?limit=${encodeURIComponent(limit)}`)
+}
+
 // 玩家 token 移动（服务端寻路 + town_move 广播）；带 mapId 让跨图后的旧请求被服务端拒掉
 export function moveTownPlayer(x, y, { worldId, worldEpoch, mapId } = {}) {
   return jsonRequest(`${BASE}/town/player/move`, {

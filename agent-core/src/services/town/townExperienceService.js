@@ -1,5 +1,6 @@
 import { createTownEventService, townError } from './townEventService.js';
 import { createTownClock } from './townClock.js';
+import { ENCOUNTER_OUTCOME_PHRASES, parseEncounterOutcome } from './townEncounterOutcome.js';
 
 export const TOWN_EXPERIENCE_CONSUMER = 'town.experience';
 
@@ -32,15 +33,31 @@ export function createTownExperienceService({ db, clock, registry, writeMemory, 
       summary: `${npcName}送了玩家一份「${item.name}」的小心意。`, locationKey: event.locationKey ?? null };
   }
 
-  /** 相遇经历：只有已收尾且摘要落库的 town_encounters 行授权一条经历；参与人就是事件的 actorIds。 */
+  /**
+   * 相遇经历：只有已收尾且摘要落库的 town_encounters 行授权一条经历；参与人就是事件的 actorIds。
+   * 两种来源形态：
+   * - M0 规则结算：payload 带 interactionType/resultCode/ruleVersion，必须与行上 outcome_json 一致；
+   *   经历文本由注册表解析的人名 + 结果代码短语组装（登记表是权威，不抄事件文案）。
+   * - 旧相遇（LLM 摘要、无 outcome_json）：沿用旧校验与文本，不从历史摘要逆向编造新事实。
+   */
   function encounterFacts(event) {
     const payload = event.payload || {};
     if (!Number.isSafeInteger(payload.encounterId) || typeof payload.summary !== 'string'
       || !payload.summary.trim() || payload.summary.length > 200
       || !Array.isArray(event.actorIds) || event.actorIds.length !== 2
       || new Set(event.actorIds).size !== 2) throw townError('EXPERIENCE_SOURCE_INVALID');
-    const row = db.prepare('SELECT id, summary, status FROM town_encounters WHERE id = ?').get(payload.encounterId);
+    const row = db.prepare('SELECT id, summary, status, outcome_json FROM town_encounters WHERE id = ?').get(payload.encounterId);
     if (!row || row.status !== 'done' || row.summary !== payload.summary) throw townError('EXPERIENCE_SOURCE_INVALID');
+    let phrase = null;
+    if (payload.resultCode !== undefined) {
+      if (payload.interactionType !== 'chat' && payload.interactionType !== 'pass_by'
+        || !ENCOUNTER_OUTCOME_PHRASES[payload.resultCode]
+        || !Number.isSafeInteger(payload.ruleVersion) || payload.ruleVersion < 1) throw townError('EXPERIENCE_SOURCE_INVALID');
+      const outcome = parseEncounterOutcome(row.outcome_json);
+      if (!outcome || outcome.interactionType !== payload.interactionType
+        || outcome.resultCode !== payload.resultCode) throw townError('EXPERIENCE_SOURCE_INVALID');
+      phrase = ENCOUNTER_OUTCOME_PHRASES[payload.resultCode];
+    }
     const names = event.actorIds.map(actorId => {
       const actor = sync(registry.getActor(actorId, event.worldId, { followMerged: false }));
       if (!actor || actor.actorId !== actorId || actor.archived || actor.mergedInto) throw townError('EXPERIENCE_SOURCE_INVALID');
@@ -54,6 +71,11 @@ export function createTownExperienceService({ db, clock, registry, writeMemory, 
     });
     const location = event.locationKey
       ? db.prepare('SELECT name FROM town_locations WHERE key = ?').get(event.locationKey)?.name || '小镇' : '小镇';
+    if (phrase !== null) {
+      return { actorIds: event.actorIds,
+        summary: `${names[0]}和${names[1]}在${location}${phrase}。`,
+        locationKey: event.locationKey ?? null };
+    }
     return { actorIds: event.actorIds,
       summary: `${names[0]}和${names[1]}在${location}聊了会儿：${payload.summary.slice(0, 80)}`,
       locationKey: event.locationKey ?? null };

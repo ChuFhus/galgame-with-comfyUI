@@ -9,8 +9,9 @@
  * 初始化向导状态、NPC 就地聊天；居民身份统一 agentKey（npc:{id} / char:{id} / me）。
  */
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import * as api from '../api/index.js'
+import { foldWanderTrail } from '../town/wanderTrail.js'
 import { onEvent } from './unifiedStream.js'
 
 export const useTownStore = defineStore('town', () => {
@@ -48,6 +49,16 @@ export const useTownStore = defineStore('town', () => {
   const player = computed(() => snapshot.value?.player ?? null)
   const weather = computed(() => snapshot.value?.weather ?? null)
   const encountersActive = computed(() => snapshot.value?.encountersActive ?? [])
+  // 居民足迹（前端合成，不落库）：只按快照里「已到站地点」的变化记一条闲逛记录，
+  // 纯内存、刷新即丢——随机游走已改成纯显示，这是补回来的"路线感"，后端不留任何痕迹。
+  const wanderTrails = ref({})
+  watch(snapshot, snap => {
+    if (!snap?.agents) return
+    const result = foldWanderTrail(wanderTrails.value, snap.agents, Date.now())
+    if (result.changed) wanderTrails.value = result.trails
+  })
+  // T11：经营场所生活供给状态（座位占用/客满/缺货），全部来自服务端事实（getTownState.lifeVenues）
+  const lifeVenues = computed(() => snapshot.value?.lifeVenues ?? [])
   const initialized = computed(() => !!snapshot.value?.initialized)
   const currentMap = computed(() => maps.value.find(m => m.id === currentMapId.value) || null)
 
@@ -543,7 +554,7 @@ export const useTownStore = defineStore('town', () => {
 
   return {
     snapshot, serverOffset, connected, loaded,
-    map, locations, agents, player, weather, encountersActive, initialized, currentMap,
+    map, locations, agents, player, weather, encountersActive, lifeVenues, wanderTrails, initialized, currentMap,
     mapData, mapLoading, assets, initState, draftPreview, renderMap,
     maps, currentMapId, playerRevision, travelBusy,
     fetchState, fetchMap, fetchAssets, fetchInitState, refreshDraftPreview, clearDraftPreview,

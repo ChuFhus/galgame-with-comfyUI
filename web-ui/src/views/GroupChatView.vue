@@ -260,6 +260,16 @@
           </div>
           <div class="gc-field">
             <div class="gc-member-title">
+              <span>群相册</span>
+              <span class="gc-temp-val">{{ groupImageCount }} 张</span>
+            </div>
+            <div class="gc-avatar-row">
+              <linshe-button size="sm" @click="showGroupAlbum = true">查看群相册</linshe-button>
+            </div>
+            <span class="gc-member-hint">汇总本群里出现过的图片，可点开大图，或按成员筛选。</span>
+          </div>
+          <div class="gc-field">
+            <div class="gc-member-title">
               <span>温度设置</span>
               <span class="gc-temp-val">{{ Number(editTemperature).toFixed(1) }}</span>
             </div>
@@ -341,6 +351,14 @@
       </div>
     </Transition>
 
+    <!-- 群相册：只收本群消息里的图片，入口在群设置的「群相册」 -->
+    <GroupAlbumModal
+      v-model="showGroupAlbum"
+      :group="store.activeGroup"
+      :messages="store.messages"
+      @deleted="onGroupImageDeleted"
+    />
+
     <!-- 点头像弹出的成员操作小窗 -->
     <Teleport to="body">
       <Transition name="avatar-pop">
@@ -383,10 +401,12 @@ import { getConfig, updateGroupActivity, updateGroupSummaryInterval, updateGroup
 import { userAvatar, loadUserAvatar } from '../userConfig.js'
 import ImageLightbox from '../components/ImageLightbox.vue'
 import ImageGenBubble from '../components/ImageGenBubble.vue'
+import GroupAlbumModal from '../components/GroupAlbumModal.vue'
 import AvatarCropper from '../components/AvatarCropper.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
 import LinsheSlider from '../components/ui/LinsheSlider.vue'
 import LinsheInput from '../components/ui/LinsheInput.vue'
+import { collectGroupImages } from '../utils/groupAlbum.js'
 import { applyMention, useMentionPicker } from '../composables/useMentionPicker.js'
 
 const route = useRoute()
@@ -409,6 +429,7 @@ const {
   options: mentionOptions,
   activeId: activeMentionId,
 } = mention
+const showGroupAlbum = ref(false)
 const showSettings = ref(false)
 const previewUrl = ref(null)
 const isFollowingLatest = ref(true)
@@ -448,6 +469,10 @@ async function onActivityChange() {
     toast?.(err.message || '群聊活跃度保存失败', 'error')
   } finally { activitySaving.value = false }
 }
+// 群设置里的群相册入口：只在抽屉打开时统计，避免长会话在后台反复重算
+const groupImageCount = computed(() => (
+  showSettings.value ? collectGroupImages(store.messages, store.activeGroup).length : 0
+))
 const canUndo = computed(() => (
   store.messages.length > 0 && !store.sending && !store.playing && !store.undoing
 ))
@@ -605,6 +630,9 @@ watch(() => store.scrollSignal, () => {
   else if (receivedNewMessage) hasNewMessages.value = true
   armLullTimer()
 })
+
+// 切换群时收起群相册，避免停留时看到上一个群的图片
+watch(() => store.activeGroupId, () => { showGroupAlbum.value = false })
 
 watch(showSettings, (open) => {
   if (open && store.activeGroup) {

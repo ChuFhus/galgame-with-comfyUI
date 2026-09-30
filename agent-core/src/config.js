@@ -146,6 +146,86 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
       maxGapHours: 10,     // 两次发帖的最大间隔
       dailyCap: 4,         // 全镇每天镇民帖子上限
     },
+    // M1 需求系统：六类满足度（0-100）按逻辑时间衰减；速率/恢复量/影响项集中配置，
+    // 数值是起始方案，应通过模拟观察与游玩验证调整。
+    needs: {
+      decayPerHour: { satiety: 2, energy: 1.5, social: 1, fun: 0.6, comfort: 0, security: 0.2 },
+      maxSettleGapMs: 12 * 3600_000,  // 单次结算最大承认间隔（离线温和截断，不一次性扣完）
+      personalitySocialDecay: [0.6, 1.4], // 外向 1 → 1.4×，内向 0 → 0.6×（social 衰减修正）
+      recovery: {
+        restEnergyPerHour: 18,          // 完成 rest 动作：每小时恢复精力
+        encounterSocial: { silent_pass: 6, brief_chat: 10, chat: 14, interrupted: 4 }, // 相遇恢复社交
+      },
+      influence: {
+        activeCap: 8,                   // 每人活跃心情影响项上限（超出淘汰最早一条）
+        chatTtlMs: 6 * 3600_000,        // 相遇类影响项的有效期
+        chatIntensity: 0.15,            // 愉快相遇的心情强度（正值）
+      },
+    },
+    // M3 有向关系：相遇结果 → 双向熟悉/好感增量；每日熟悉度上限防重复刷收益
+    social: {
+      familiarityPerOutcome: { silent_pass: 2, interrupted: 1, brief_chat: 4, chat: 6 },
+      affectionPerOutcome: { chat: 2, brief_chat: 1 },
+      dailyFamiliarityCap: 10,        // 每对每方向每日最多生效的熟悉度来源次数
+    },
+    // M2 空闲生活动作：需求紧迫度分段线性评分（阈值/权重/滞回带集中配置，
+    // 起始数值，应由模拟观察与游玩验证调整）。
+    life: {
+      urgency: { eatBelow: 65, funBelow: 60, energyBelow: 45, comfortBelow: 50 },
+      weight: {
+        eatPerNeedPoint: 1.2,           // (eatBelow - satiety) × 1.2
+        readPerNeedPoint: 0.8,
+        sitPerEnergyPoint: 0.6, sitPerComfortPoint: 0.6,
+        curiosityBonus: 10,             // 好奇心 → 阅读倾向
+        interestBonus: 6,               // 兴趣标签匹配加成（料理→吃，阅读→读）
+        distanceCost: 1.5,              // 每格切比雪夫距离的扣分
+      },
+      nearBand: 8,                      // 近分平局带（确定性随机挑选，防全体趋同）
+      capacity: { eat: 4, read: 3, sit: 6 }, // 场所同时容纳的生活动作数（客满后决策改选他处）
+      keepBand: { eat: 80, read: 85, sit: 70 }, // 滞回带：需求恢复出带才换计划
+      durationsMin: { eat: 20, read: 30, sit: 10 },
+      recovery: { eatSatiety: 40, readFun: 22, sitComfort: 12, sitEnergy: 6 },
+      maxMoveFailures: 3,               // 生活计划目标连续不可达的放弃阈值
+    },
+    // M4 基础经营：固定价格起始方案（先验证供给/工资/消费循环，浮动价格后置）。
+    economy: {
+      wagePerShift: 10,                 // 每次 work_shift 出勤的工资（完成后支付，只付一次）
+      mealPrice: 6,                     // 每份餐食价格（life_eat 完成时支付经营账户）
+      actorSeed: 50,                    // 居民一次性启动资金（玩家另有 v2 开局补助 200）
+      venueSeed: 200,                   // 场所经营账户一次性启动资金
+      procureThreshold: 3,              // 餐食库存低于该值触发补货
+      procureBatch: 12,                 // 每次补货量（份）
+      procureCost: 12,                  // 每次补货付给外部供应商的金额
+      procureIntervalMs: 3600_000,      // 补货最小间隔（小时桶，来源键按桶幂等）
+      supplierDailyImport: 40,          // 外部供应商每日食材到货（来源明确的物资流入）
+    },
+    // M5 目标/技能/习惯：进度从已结算事实消费；技能每日收益有上限且随等级边际递减
+    goals: {
+      careerProgressPerShift: 5,        // 每次出勤的职业目标进度
+      readProgress: 3,                  // 每次阅读的兴趣目标进度
+      eatInterestProgress: 3,
+      skillBase: 3,                     // 技能基础收益（每次有效行为）
+      habitBase: 2,                     // 习惯基础收益
+      skillDailyCap: 6,                 // 每项技能/习惯每日收益上限
+      interestGoalBonus: 12,            // 兴趣目标对匹配生活动作的评分加成
+      habitBonusScale: 0.15,            // 习惯等级 → 评分加成系数
+    },
+    // M6 事件导演：候选只能从已结算事实建立（repeat_key 幂等）；邀请复用镇民奇遇管线
+    director: {
+      candidateTtlMs: 24 * 3600_000,    // 候选有效期（过期自行关闭，无惩罚）
+      inviteDailyCap: 3,                // 全镇每日邀请上限（节奏控制）
+      inviteGapMs: 90 * 60_000,         // 候选建立后到可邀请的最小间隔（恢复期）
+    },
+    // M7 关键叙事：自动叙事每日预算（调参起点）；模型输出过不了契约就模板回退
+    narrative: {
+      dailyAutoQuota: 3,                // 每镇每日自动叙事额度（手动触发不计）
+      cacheMax: 64,                     // 叙事缓存条数（重复打开不重新生成）
+      maxAttempts: 2,                   // 失败有限重试，之后模板回退
+      summaryMin: 20, summaryMax: 80,   // 契约：摘要字数
+      lineMin: 10, lineMax: 80,         // 契约：台词字数
+      linesMax: 6,                      // 契约：台词条数
+      labelMin: 2, labelMax: 18,        // 契约：选项文案字数
+    },
     // 布图密度：每 1000 格的目标对象数。原建筑均值约 2.8，默认提升 50% 后为 4.2；
     // 道具必须始终高于建筑，由 updateTownSettings 统一夹紧。
     buildingDensity: 4.2,

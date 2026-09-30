@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { createPinia, defineStore } from 'pinia'
+import { foldWanderTrail } from '../src/town/wanderTrail.js'
 
 // Run the real store with isolated API/event dependencies, including its debounce.
 const source = readFileSync(new URL('../src/stores/town.js', import.meta.url), 'utf8')
@@ -26,8 +27,8 @@ async function harness(t) {
     events.set(name, callback)
     return () => events.delete(name)
   }
-  const useStore = new Function('defineStore', 'ref', 'computed', 'api', 'onEvent', source)(
-    defineStore, ref, computed, api, onEvent)
+  const useStore = new Function('defineStore', 'ref', 'computed', 'watch', 'api', 'onEvent', 'foldWanderTrail', source)(
+    defineStore, ref, computed, watch, api, onEvent, foldWanderTrail)
   const store = useStore(createPinia())
   store.startTownStream()
   t.after(() => store.stopTownStream())

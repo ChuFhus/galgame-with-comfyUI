@@ -731,7 +731,9 @@ function initSchema(db) {
       char_b INTEGER NOT NULL,
       location_id INTEGER,
       status TEXT NOT NULL DEFAULT 'chatting' CHECK(status IN ('chatting','done','cancelled')),
-      summary TEXT DEFAULT '',
+      summary TEXT DEFAULT '',              -- 规则结算的模板摘要（M0：唯一权威事实文本）
+      outcome_json TEXT,                    -- 规则结算的结构化结果 {interactionType,resultCode,ruleVersion,settledAtUtcMs}
+      polished_summary TEXT DEFAULT '',     -- LLM 润色摘要（仅附加表现，不参与结算校验）
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       ended_at DATETIME
     );
@@ -880,6 +882,9 @@ function initSchema(db) {
   // 迁移: town_newspapers 加 world_dismissed 列（日报手动消除世界影响）；
   // 必须在外键重建之后执行——重建出的表不带该列
   migrateNewspaperWorldDismissed(db);
+
+  // 迁移: town_encounters 加 outcome_json / polished_summary（M0 相遇规则结算）
+  migrateTownEncounterOutcome(db);
 
   // 迁移: moment_unread 计数 → 时序方案 (last_moments_seen_at)
   migrateMomentUnreadToTimestamp(db);
@@ -1485,6 +1490,27 @@ export function migrateNewspaperWorldDismissed(db) {
     }
   } catch (err) {
     console.log('[db] migrateNewspaperWorldDismissed error:', err.message);
+  }
+}
+
+/**
+ * M0 相遇结算：town_encounters 加 outcome_json（规则结算的结构化结果）与
+ * polished_summary（LLM 润色，仅表现）。可重复执行；旧库旧行两列为空即走兼容路径。
+ */
+export function migrateTownEncounterOutcome(db) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(town_encounters)`).all();
+    if (!cols.length) return; // 表还没建（新库走 CREATE TABLE 分支）
+    if (!cols.find(c => c.name === 'outcome_json')) {
+      db.exec(`ALTER TABLE town_encounters ADD COLUMN outcome_json TEXT DEFAULT NULL`);
+      console.log('[db] Added town_encounters.outcome_json column (default NULL)');
+    }
+    if (!cols.find(c => c.name === 'polished_summary')) {
+      db.exec(`ALTER TABLE town_encounters ADD COLUMN polished_summary TEXT DEFAULT ''`);
+      console.log('[db] Added town_encounters.polished_summary column (default \'\')');
+    }
+  } catch (err) {
+    console.log('[db] migrateTownEncounterOutcome error:', err.message);
   }
 }
 

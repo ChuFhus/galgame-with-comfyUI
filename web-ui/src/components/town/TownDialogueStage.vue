@@ -1,13 +1,17 @@
 <template>
-  <section ref="root" class="town-dialogue-stage" role="dialog" aria-modal="true" :aria-label="`与${displayName}对话`"
-    :style="viewportStyle" :class="{ compact }" tabindex="-1" @keydown.stop="onKeydown" @keyup.stop @pointerdown.stop @mousedown.stop @click.stop="onStageClick" @wheel.stop @touchstart.stop @touchmove.stop>
+  <section
+ref="root" class="town-dialogue-stage" role="dialog" aria-modal="true" :aria-label="`与${displayName}对话`"
+    :style="viewportStyle" :class="{ compact }" tabindex="-1" @keydown.stop="onKeydown" @keyup.stop @pointerdown.stop @mousedown.stop @click.stop="onStageClick" @wheel.stop @touchstart.stop @touchmove.stop
+>
     <div class="td-portraits" aria-label="对话人物">
       <figure v-for="person in portraits" :key="person.side">
         <img v-if="person.url && !failedImages[person.url]" :src="person.url" :alt="`${person.name}立绘`" @error="failedImages[person.url] = true">
         <div v-else class="td-placeholder" aria-hidden="true">{{ person.name.slice(0, 1) }}</div>
         <figcaption>{{ person.name }}</figcaption>
-        <div v-if="person.side === 'left' && npcBubble && chatActive && !historyOpen" :key="npcBubble.id ?? bubbleIndex"
-          class="td-say-bubble" role="status" aria-live="polite">
+        <div
+v-if="person.side === 'left' && npcBubble && chatActive && !historyOpen" :key="npcBubble.id ?? bubbleIndex"
+          class="td-say-bubble" role="status" aria-live="polite"
+>
           <span class="td-say-name">{{ displayName }}</span>
           <p>{{ npcBubble.content }}</p>
         </div>
@@ -19,15 +23,33 @@
         <path d="M29 24 L216 18 L405 26 L567 21 M29 392 L173 385 L350 395 L566 387" fill="none" stroke="#e0c9aa" stroke-width="1.5" vector-effect="non-scaling-stroke" />
       </svg>
       <header>
-        <div><span class="td-kicker">小镇 · 相谈</span><h2>{{ displayName }}</h2></div>
+        <div class="td-heading">
+          <span class="td-kicker">小镇 · 相谈</span>
+          <span v-if="statusLine" class="td-resident-status" role="status">此刻 · {{ statusLine }}</span>
+        </div>
         <div class="td-actions">
-          <linshe-button variant="ghost" size="sm" :aria-expanded="historyOpen" @click="historyOpen = !historyOpen">{{ historyOpen ? '收起记录' : '历史' }}</linshe-button>
-          <linshe-button variant="icon" size="sm" aria-label="关闭对话" @click="$emit('close')">✕</linshe-button>
+          <linshe-button variant="ghost" size="sm" @click="$emit('open-status')">状态</linshe-button>
+          <linshe-button variant="ghost" size="sm" :aria-expanded="activityOpen" @click="toggleActivity">{{ activityOpen ? '收起动态' : '动态' }}</linshe-button>
+          <linshe-button variant="ghost" size="sm" :aria-expanded="historyOpen" @click="toggleHistory">{{ historyOpen ? '收起记录' : '历史' }}</linshe-button>
         </div>
       </header>
+      <h2>{{ displayName }}</h2>
       <div class="td-page" :key="pageKey">
-        <div ref="body" class="td-body" :class="{ 'td-body--history': historyOpen }" tabindex="0" :aria-live="historyOpen ? 'polite' : 'off'" :aria-label="historyOpen ? '最近对话记录' : chatActive ? '当前对话' : '场景'">
-          <template v-if="historyOpen">
+        <div ref="body" class="td-body" :class="{ 'td-body--history': historyOpen || activityOpen }" tabindex="0" :aria-live="historyOpen || activityOpen ? 'polite' : 'off'" :aria-label="activityOpen ? '最近行动记录' : historyOpen ? '最近对话记录' : chatActive ? '当前对话' : '场景'">
+          <template v-if="activityOpen">
+            <p v-if="activityLoading" role="status">正在读取行动记录…</p>
+            <template v-else>
+              <p v-if="!activity.length" class="td-muted">还没有留下行动记录，去镇上转转会有的。</p>
+              <ul v-else class="td-activity">
+                <li v-for="item in activity" :key="item.seq" :class="{ 'is-local': item.local }">
+                  <time>{{ formatActivityTime(item.occurredAt) }}</time>
+                  <span v-if="item.local" class="td-footprint-chip">足迹</span>
+                  <span>{{ item.text }}</span>
+                </li>
+              </ul>
+            </template>
+          </template>
+          <template v-else-if="historyOpen">
             <p v-if="loading" role="status">正在读取对话…</p>
             <template v-else>
               <linshe-button v-if="hasMoreHistory" variant="link" size="sm" @click="$emit('load-older')">更早的记录</linshe-button>
@@ -63,8 +85,10 @@
           <linshe-button variant="link" size="sm" :disabled="loading || sending" @click="$emit('reload')">重新读取记录</linshe-button>
         </div>
         <form v-if="showInput && chatActive" class="td-input" @submit.prevent="submit">
-          <linshe-input ref="input" v-model="draft" size="sm" :disabled="loading || sending || blocked" :maxlength="maxLength" aria-label="对话内容" placeholder="说点什么…"
-            @compositionstart="composing = true" @compositionend="composing = false" @keydown.enter="onEnter" />
+          <linshe-input
+ref="input" v-model="draft" size="sm" :disabled="loading || sending || blocked" :maxlength="maxLength" aria-label="对话内容" placeholder="说点什么…"
+            @compositionstart="composing = true" @compositionend="composing = false" @keydown.enter="onEnter"
+/>
           <linshe-button type="submit" variant="primary" size="sm" :loading="sending" :disabled="loading || blocked || !draft.trim()">发送</linshe-button>
         </form>
       </div>
@@ -86,10 +110,34 @@ const props = defineProps({
   error: { type: String, default: '' },
   status: { type: String, default: '' }, hasMoreHistory: Boolean, maxLength: { type: Number, default: 200 },
   retryable: Boolean, draftRestore: Object, actions: { type: Array, default: () => [] },
+  // 居民当前状态（地图 activityText）与最近行动记录（「动态」页签）
+  statusLine: { type: String, default: '' },
+  activity: { type: Array, default: () => [] }, activityLoading: Boolean, activityLoaded: Boolean,
 })
-const emit = defineEmits(['send', 'close', 'reload', 'load-older', 'retry', 'action'])
+const emit = defineEmits(['send', 'close', 'reload', 'load-older', 'retry', 'action', 'fetch-activity', 'open-status'])
 const root = ref(null), input = ref(null), body = ref(null)
-const draft = ref(''), composing = ref(false), historyOpen = ref(false), failedImages = ref({})
+const draft = ref(''), composing = ref(false), historyOpen = ref(false), activityOpen = ref(false), failedImages = ref({})
+// 「动态 / 历史」两页签互斥展开；首次展开时向宿主要一次数据（「状态」是独立弹窗，不走页签）
+function toggleActivity() {
+  activityOpen.value = !activityOpen.value
+  if (activityOpen.value) {
+    historyOpen.value = false
+    // 只看后端是否已加载：合并列表里有前端足迹时长度恒非零，不能拿它当判据
+    if (!props.activityLoaded && !props.activityLoading) emit('fetch-activity')
+  }
+}
+function toggleHistory() {
+  historyOpen.value = !historyOpen.value
+  if (historyOpen.value) activityOpen.value = false
+}
+function formatActivityTime(occurredAt) {
+  const date = new Date(occurredAt)
+  if (!Number.isFinite(date.getTime())) return ''
+  const now = new Date()
+  const sameDay = date.toDateString() === now.toDateString()
+  const hhmm = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  return sameDay ? hhmm : `${date.getMonth() + 1}月${date.getDate()}日 ${hhmm}`
+}
 const viewportStyle = ref({}), compact = ref(false)
 watch(() => props.draftRestore, value => { if (value) draft.value = value.text })
 // 对话模式只展示最近几条；完整记录交给「历史」按钮展开
@@ -187,9 +235,9 @@ function resize() {
     : { top: `${offset}px`, height: `${height}px` }
 }
 let previousFocus, observer
-watch(() => [props.messages.length, props.sending, historyOpen.value, props.chatActive], async () => {
+watch(() => [props.messages.length, props.sending, historyOpen.value, activityOpen.value, props.chatActive], async () => {
   await nextTick()
-  if (body.value) body.value.scrollTop = (historyOpen.value || props.chatActive) ? body.value.scrollHeight : 0
+  if (body.value) body.value.scrollTop = (historyOpen.value || activityOpen.value || props.chatActive) ? body.value.scrollHeight : 0
 })
 watch(() => props.loading || props.sending || props.blocked, async busy => {
   await nextTick()
@@ -219,7 +267,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.town-dialogue-stage { position: absolute; inset: auto 0 0; height: min(680px, calc(100% - 108px)); z-index: 60; display: grid; grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr) minmax(330px, 540px) minmax(0, 1fr); align-items: end; gap: 8px; box-sizing: border-box; padding: 0 18px 24px; pointer-events: none; color: #574a40; overscroll-behavior: contain; outline: none;
+.town-dialogue-stage { position: absolute; inset: auto 0 0; height: min(680px, calc(100% - 108px)); z-index: 60; display: grid; grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr) minmax(330px, 620px) minmax(0, 1fr); align-items: end; gap: 8px; box-sizing: border-box; padding: 0 18px 24px; pointer-events: none; color: #574a40; overscroll-behavior: contain; outline: none;
   /* 暖纸色岛：舞台在两种主题下都是纸面观感，糖纸控件 token 在此重映射到小镇纸色，
      暗夜里 ghost 按钮 / 输入框才不会变成深色玻璃浮在奶油纸上 */
   --bg-secondary: #ffffff;
@@ -241,12 +289,35 @@ onBeforeUnmount(() => {
 .td-say-name { font-size: 11px; color: #947f6d; }
 @keyframes td-bubble-pop { from { opacity: 0; transform: translate(-10px, 8px) scale(.92); } to { opacity: 1; transform: none; } }
 .td-placeholder { background: #f4f1eeed; color: #947f6d; border-radius: 48px 48px 12px 12px; padding: 24px; font-size: 32px; }
-.td-panel { pointer-events: auto; position: relative; isolation: isolate; grid-column: 2; grid-row: 1; align-self: end; width: 100%; max-width: 540px; height: min(420px, 100%); min-height: 0; display: flex; flex-direction: column; box-sizing: border-box; padding: 27px 30px 30px; }
+.td-panel { pointer-events: auto; position: relative; isolation: isolate; grid-column: 2; grid-row: 1; align-self: end; width: 100%; max-width: 620px; height: min(420px, 100%); min-height: 0; display: flex; flex-direction: column; box-sizing: border-box; padding: 27px 30px 30px; }
 .td-dialog-shape { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; filter: drop-shadow(0 8px 18px #362a3826); pointer-events: none; }
-header, .td-actions, .td-input { display: flex; align-items: center; gap: 10px; }
-header { justify-content: space-between; }
-h2 { color: #59483d; font-size: 20px; font-weight: 700; margin: 4px 0 8px; }
-.td-kicker { color: #a1846e; font-size: 10px; letter-spacing: .15em; }
+.td-actions, .td-input { display: flex; align-items: center; gap: 10px; }
+/* 头部左右结构：左「小镇 · 相谈 + 状态」，右「状态/动态/历史」；放不下时仅让右侧按钮换行，
+   状态文案始终完整（不省略、不截断），只有真的超过面板宽度才在胶囊内自然换行 */
+header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+.td-heading { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; }
+h2 { color: #59483d; font-size: 20px; font-weight: 700; margin: 6px 0 8px; }
+.td-kicker { color: #a1846e; font-size: 10px; letter-spacing: .15em; white-space: nowrap; }
+.td-resident-status {
+  flex: 0 1 auto; min-width: 0; max-width: 100%;
+  color: #a1846e; font-size: 10px; letter-spacing: .02em; line-height: 1.5;
+  padding: 2px 9px; border: 1px solid rgba(161, 132, 110, .45); border-radius: 999px;
+  background: rgba(255, 251, 243, .7);
+}
+.td-activity { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.td-activity li {
+  display: flex; gap: 10px; align-items: baseline; font-size: 12px; color: #4a3a2c;
+  padding: 5px 10px; border: 1px solid rgba(161, 132, 110, .3); border-radius: 10px;
+  background: rgba(255, 251, 243, .65);
+}
+.td-activity li time { flex: none; color: #a1846e; font-size: 10px; }
+.td-activity-toolbar { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.td-footprint-hint { color: #a1846e; font-size: 10px; }
+.td-activity li.is-local { border-style: dashed; border-color: rgba(124, 143, 124, .5); }
+.td-footprint-chip {
+  flex: none; padding: 1px 6px; border-radius: 999px; font-size: 10px; color: #6d826d;
+  border: 1px dashed rgba(124, 143, 124, .6); background: rgba(124, 143, 124, .1);
+}
 .td-speaker, .td-muted { font-size: 12px; color: #947f6d; }
 /* overflow-x 同样 clip：消息里的果冻按钮贴边放大时会把横向滚动条闪出来（同 TownResidentActions） */
 .td-page { flex: 1; min-height: 0; display: flex; flex-direction: column; animation: td-page-in .3s var(--ease-out) both; }

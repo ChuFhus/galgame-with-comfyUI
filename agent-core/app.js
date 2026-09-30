@@ -2,7 +2,7 @@ import './src/envCheck.js'; // 必须最先执行：Node ABI 预检，防 better
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
-import { readFileSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { config, autoDetectWorkflowMode } from './src/config.js';
 import { getDb, closeDb } from './src/db/index.js';
@@ -172,6 +172,31 @@ console.log('============================================');
 // 初始化数据库
 getDb();
 console.log('[db] SQLite initialized');
+
+// 启动自动压缩：清理任务删除大量行后，SQLite 只把页还回内部空闲列表，文件对操作系统的
+// 占用不变。空闲页占比超阈值时在监听端口前做一次 VACUUM（阻塞启动数秒到数分钟，一次性
+// 成本），把磁盘空间真正归还；刚清理过的库空闲占比为 0 会直接跳过。失败（如磁盘不足）
+// 仅告警，不阻断启动。DB_AUTO_VACUUM=0 可关闭。
+compactDatabaseIfFragmented();
+
+function compactDatabaseIfFragmented() {
+  try {
+    if (process.env.DB_AUTO_VACUUM === '0') return;
+    const db = getDb();
+    const pages = db.pragma('page_count', { simple: true });
+    const free = db.pragma('freelist_count', { simple: true });
+    const ratio = pages > 0 ? free / pages : 0;
+    const sizeBefore = statSync(config.dbPath).size;
+    if (ratio < 0.25 || sizeBefore < 100 * 1024 * 1024) return;
+    console.log(`[db] 空闲页占比 ${(ratio * 100).toFixed(0)}%（文件 ${(sizeBefore / 1073741824).toFixed(2)} GB）→ VACUUM 压缩中，大库可能需要几分钟…`);
+    const t0 = Date.now();
+    db.exec('VACUUM');
+    const sizeAfter = statSync(config.dbPath).size;
+    console.log(`[db] VACUUM 完成（${Math.round((Date.now() - t0) / 1000)}s）：${(sizeBefore / 1073741824).toFixed(2)} GB → ${(sizeAfter / 1073741824).toFixed(2)} GB`);
+  } catch (err) {
+    console.warn('[db] 自动压缩跳过（不影响启动）:', err?.message || err);
+  }
+}
 
 // 初始化时根据 ComfyUI/models/diffusion_models 下的模型自动检测工作流模式（仅首次执行一次）
 autoDetectWorkflowMode();

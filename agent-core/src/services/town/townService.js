@@ -3,13 +3,16 @@
  *
  * 分层（详见 ai-town-plan.md v2）：
  *   L0 确定性模拟：NPC 作息 FSM / 入住角色日程投影 → A* 寻路 → 服务端权威推进（无 LLM）
- *   L1 规则触发：  相遇判定、玩家靠近问候（本地模板）、天气/时段修正（无 LLM）
- *   L2 LLM 事件：  相遇对话、批量状态短语（独立串行队列，永不挤占聊天）
- *                  由 config.features.townAutoLLM 统一控制：关闭时这两个 tick 驱动的自动
- *                  生成不再调用模型（相遇仍照常发生，只是静默）；玩家主动发起的 NPC 交谈
- *                  与互动奇遇不受影响，仍由 config.features.townLLM 决定。
- *   L3 记忆回写：  相遇摘要入账为 town.encounter.happened 事件 → townExperienceService 沉淀双方
- *                  经历与角色记忆；NPC 对话历史由 townNpcService 落库
+ *   L1 规则触发：  相遇判定、玩家靠近问候（本地模板）、天气/时段修正（无 LLM）。
+ *                  M0 起相遇收尾由规则结算结构化事实（townEncounterOutcome）：结果代码 +
+ *                  模板摘要 + 经历事件同一事务落库，与地图聚焦/自动 LLM 解耦——后台图、
+ *                  零模型都照常沉淀经历；相遇扫描因此属于世界逻辑，对所有图运行。
+ *   L2 LLM 事件：  相遇对话、相遇摘要润色（polished_summary）、批量状态短语（独立串行队列，
+ *                  永不挤占聊天）由 config.features.townAutoLLM 统一控制，且只在聚焦图消耗：
+ *                  关闭或无观看时这些演出跳过，但相遇仍发生并按规则结算；玩家主动发起的
+ *                  NPC 交谈与互动奇遇不受影响，仍由 config.features.townLLM 决定。
+ *   L3 记忆回写：  相遇规则结算入账为 town.encounter.happened 事件 → townExperienceService
+ *                  沉淀双方经历与角色记忆；NPC 对话历史由 townNpcService 落库
  *
  * 状态原则：服务端权威 + 内存为准；坐标只在换目标/换活动时落库，
  * 进程重启后由「作息/日程 + 当前时刻」重建（town_agent_state 仅是恢复快照）。
@@ -28,6 +31,14 @@ import { createEconomyService } from './economyService.js';
 import { maintainTownLife, getTownLifeRuntime } from './townEconomyRuntime.js';
 import { createTownEventService } from './townEventService.js';
 import { TOWN_EXPERIENCE_CONSUMER } from './townExperienceService.js';
+import { settleEncounterOutcome, templateEncounterSummary, encounterScanRandom, pairEncounterFactor } from './townEncounterOutcome.js';
+import { createTownNeedsService } from './townNeedsService.js';
+import { createTownRelationshipService, relationshipEncounterFactor } from './townRelationshipService.js';
+import { createTownBusinessService } from './townBusinessService.js';
+import { createTownGoalService } from './townGoalService.js';
+import { createTownDirectorService } from './townDirectorService.js';
+import { pickIdleLifeAction } from './townDecisionService.js';
+import { listLifeVenues } from './townAffordanceService.js';
 import { generateTownNpcEvent, TOWN_NPC_AMBIENT_EVENT_TYPE_KEY } from './townNpcEventGenerator.js';
 import { getDb } from '../../db/index.js';
 import { config } from '../../config.js';
@@ -82,6 +93,7 @@ function createRuntimeState({ mapId = null, map = null, locations = [], matcher 
     matcher,
     agents: new Map(),   // agentKey -> agent
     meta: new Map(),     // agentKey -> { agentKey, kind, refId, displayName, personaPrompt, avatarPath, sprites }
+    lifeVenues: [],      // M2：本图生活供给目录 [{key, offers, x, y}]（hydrate 时按显式配置推导）
     relationships: new Set(),   // 'min:max'（有 relationship_text 的角色无向对）
     moods: new Map(),    // charId -> { valence, arousal, dominantEmotion, updatedAt }
     encounters: new Map(), // id -> encounter
@@ -263,6 +275,106 @@ export function isMapFocused(mapId) {
 
 // ── 启动 / 状态装载 ──
 
+// 终态动作行保留期：town_actions 是意图日志，取消/完成的动作不参与任何事实结算
+// （事实在经历/事件/经济账本侧），只保留短期调试窗口；重启恢复与命令重试的引用
+// 都在分钟级，避雨预算按同一天气预报键读取（当天尺度），7 天窗口足够安全。
+const TOWN_ACTION_RETENTION_MS = 7 * 86400_000;
+const TOWN_ACTION_PURGE_BATCH = 5000;          // 每批删除行数（小事务，防长时间锁写冻住事件循环）
+const TOWN_ACTION_PURGE_BUDGET_MS = 3000;      // 单次运行时间预算（批间让路事件循环）
+const TOWN_ACTION_PURGE_MAX_ROWS = 400_000;    // 单次运行行数预算（大存量分多个周期排空）
+const TOWN_ACTION_PURGE_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * 分批清理 7 天前的终态动作行及其 activity_log 子行。主键分页单遍扫描（终止条件：
+ * 扫完表或触及预算），批间 setImmediate 让路；不自动 VACUUM——删除只标记空闲页，
+ * 归还磁盘需停服手动执行。
+ * 注意：town_actions 被 town_activity_log/town_resource_claims/town_production_proofs
+ * 以 FK 引用，且 foreign_keys=ON——必须先删子表行再删父行；activity_log(action_id)
+ * 的索引是删除可行性的前提（无索引时每删一行都是百万级全表扫描）。
+ */
+export async function purgeTownActionHistory({ nowMs = Date.now(), budgetMs = TOWN_ACTION_PURGE_BUDGET_MS,
+  maxRows = TOWN_ACTION_PURGE_MAX_ROWS } = {}) {
+  const db = getDb();
+  const cutoff = nowMs - TOWN_ACTION_RETENTION_MS;
+  const page = db.prepare('SELECT id, status, updated_at FROM town_actions WHERE id > ? ORDER BY id LIMIT ?');
+  const delChildren = ids => db.prepare(`DELETE FROM town_activity_log WHERE action_id IN (${ids.map(() => '?').join(',')})`).run(...ids);
+  const delParents = ids => db.prepare(`DELETE FROM town_actions WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
+  const startedAt = Date.now();
+  let cursor = '', deleted = 0, scanned = 0;
+  for (;;) {
+    const rows = page.all(cursor, TOWN_ACTION_PURGE_BATCH);
+    if (!rows.length) break;
+    cursor = rows[rows.length - 1].id;
+    scanned += rows.length;
+    const stale = rows.filter(r => r.updated_at < cutoff
+      && (r.status === 'completed' || r.status === 'cancelled' || r.status === 'failed')).map(r => r.id);
+    if (stale.length) {
+      db.transaction(() => { delChildren(stale); delParents(stale); })();
+      deleted += stale.length;
+    }
+    if (deleted >= maxRows || Date.now() - startedAt >= budgetMs) break;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  if (deleted > 0) console.log(`[town] purged ${deleted} town_actions rows (terminal, older than 7d), scanned ${scanned}`);
+  // 幂等记录与领域事件：重放/投递只在本 epoch 内有意义——epoch 轮换时整段清旧纪元；
+  // 当前 epoch 的请求行带 created_at（旧库旧行为 NULL，由轮换代走），按保留期删
+  const currentEpoch = db.prepare('SELECT epoch FROM town_world_state').get()?.epoch ?? null;
+  if (Number.isSafeInteger(currentEpoch) && shared.purgedLogEpoch !== currentEpoch) {
+    const st = shared.purgeLogState;
+    if (!st || (st.reqDone && st.evtDone)) {
+      shared.purgeLogState = { reqRowid: 0, evtRowid: 0, reqDone: false, evtDone: false };
+    }
+    await purgeEpochLogs(db, currentEpoch, budgetMs);
+    if (shared.purgeLogState.reqDone && shared.purgeLogState.evtDone) shared.purgedLogEpoch = currentEpoch;
+  }
+  db.prepare('DELETE FROM town_action_requests WHERE created_at IS NOT NULL AND created_at < ?').run(cutoff);
+  return { deleted, scanned };
+}
+
+/**
+ * rowid 分页清 currentEpoch 之前的幂等记录与领域事件（先删 deliveries 子行满足 FK）。
+ * 可恢复：预算耗尽时把游标留在 shared.purgeLogState，下个周期按游标接着扫；
+ * 新写入都是当前 epoch，不会落在已扫过的游标区间。
+ */
+async function purgeEpochLogs(db, currentEpoch, budgetMs) {
+  const t0 = Date.now();
+  const over = () => Date.now() - t0 >= budgetMs;
+  const st = shared.purgeLogState;
+  if (!st.reqDone) {
+    for (;;) {
+      const ids = db.prepare('SELECT rowid FROM town_action_requests WHERE rowid > ? AND world_epoch < ? ORDER BY rowid LIMIT 50000')
+        .all(st.reqRowid, currentEpoch).map(r => r.rowid);
+      if (!ids.length) { st.reqDone = true; break; }
+      st.reqRowid = ids[ids.length - 1];
+      db.prepare(`DELETE FROM town_action_requests WHERE rowid IN (${ids.join(',')})`).run();
+      if (over()) return;
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  }
+  if (!st.evtDone) {
+    for (;;) {
+      // 经历账本（town_experiences）引用的事件是角色记忆的来源凭证，永久保留
+      const rows = db.prepare(`SELECT rowid, event_id FROM town_domain_events
+        WHERE rowid > ? AND world_epoch < ? AND event_id NOT IN (SELECT event_id FROM town_experiences)
+        ORDER BY rowid LIMIT 50000`).all(st.evtRowid, currentEpoch);
+      if (!rows.length) { st.evtDone = true; break; }
+      st.evtRowid = rows[rows.length - 1].rowid;
+      const rids = rows.map(r => r.rowid).join(',');
+      db.transaction(() => {
+        db.prepare(`DELETE FROM town_event_deliveries WHERE event_id IN
+          (SELECT event_id FROM town_domain_events WHERE rowid IN (${rids}))`).run();
+        // activity_log.event_id 同样 FK 指向 domain_events（纯写入审计，无读者）
+        db.prepare(`DELETE FROM town_activity_log WHERE event_id IN
+          (SELECT event_id FROM town_domain_events WHERE rowid IN (${rids}))`).run();
+        db.prepare(`DELETE FROM town_domain_events WHERE rowid IN (${rids})`).run();
+      })();
+      if (over()) return;
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  }
+  console.log(`[town] purged epoch<${currentEpoch} request/event logs`);
+}
+
 export function startTownScheduler() {
   if (!config.features.town) {
     console.log('[town] feature disabled, scheduler skipped');
@@ -279,6 +391,14 @@ export function startTownScheduler() {
   }, 5000);
   shared.timer = setInterval(tick, config.town.tickSeconds * 1000);
   shared.simTimer = setInterval(simSubTick, TOWN_SIM_SUBTICK_MS);
+  // 存量清理：启动稍等片刻跑首轮（避让初始化），此后按间隔巡检
+  shared.purgeStartupTimer = setTimeout(() => {
+    shared.purgeStartupTimer = null;
+    if (shared.running) purgeTownActionHistory().catch(err => console.warn('[town] action purge failed:', err?.message || err));
+  }, 90_000);
+  shared.purgeTimer = setInterval(() => {
+    if (shared.running) purgeTownActionHistory().catch(err => console.warn('[town] action purge failed:', err?.message || err));
+  }, TOWN_ACTION_PURGE_INTERVAL_MS);
   console.log(`[town] scheduler started (tick=${config.town.tickSeconds}s, simSubtick=${TOWN_SIM_SUBTICK_MS / 1000}s, maps=${runtimes.size}${shared.playerMapId ? '' : ', 等待世界初始化'})`);
 }
 
@@ -287,6 +407,8 @@ export function stopTownScheduler() {
   if (shared.timer) { clearInterval(shared.timer); shared.timer = null; }
   if (shared.simTimer) { clearInterval(shared.simTimer); shared.simTimer = null; }
   if (shared.startupTimer) { clearTimeout(shared.startupTimer); shared.startupTimer = null; }
+  if (shared.purgeTimer) { clearInterval(shared.purgeTimer); shared.purgeTimer = null; }
+  if (shared.purgeStartupTimer) { clearTimeout(shared.purgeStartupTimer); shared.purgeStartupTimer = null; }
   persistAllRuntimes();
 }
 
@@ -375,6 +497,8 @@ function hydrateRuntime(assets = listAssets({})) {
     : [];
   rt.matcher = buildLocationMatcher(rt.locations);
   rt.spriteAssets = assets;
+  // M2：本图生活供给目录（只认 business_kind/kind 显式配置，不从名字猜）
+  rt.lifeVenues = listLifeVenues(rt.locations);
 
   // actor registry 决定唯一实体；邀请后沿用原 NPC 的身份与位置（按所在图过滤）
   synchronizeMembership();
@@ -436,15 +560,85 @@ function loadPlayer(pRow) {
   shared.player = player;
 }
 
-/** 重启后 chatting 状态的相遇无法恢复上下文：统一收尾（不调 LLM） */
+/**
+ * 重启后 chatting 状态的相遇无法恢复上下文：保守收尾（M0 恢复策略）。
+ * - 已有经历事件的历史相遇：保留旧文本原样收尾，不重复结算、不批量改写。
+ * - 从未结算的相遇：按 interrupted 结果代码补一次规则结算（模板摘要 + 经历事件），
+ *   与正常收尾共用同一套结算命令。
+ */
 function closeStaleEncounters() {
   const db = getDb();
   const activeEncs = db.prepare(`SELECT * FROM town_encounters WHERE status = 'chatting'`).all();
   if (activeEncs.length === 0) return;
-  const nowIso = new Date().toISOString().slice(0, 19).replace('T', ' ');
-  const upd = db.prepare(`UPDATE town_encounters SET status = 'done', ended_at = ?, summary = COALESCE(NULLIF(summary,''), '（对话被打断）') WHERE id = ?`);
-  for (const enc of activeEncs) upd.run(nowIso, enc.id);
-  console.log(`[town] closed ${activeEncs.length} stale encounter(s) on boot`);
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString().slice(0, 19).replace('T', ' ');
+  const events = encounterEventService();
+  const registry = createTownActorRegistry(getDb());
+  const worldId = registry.getWorldState().worldId;
+  let settled = 0;
+  for (const row of activeEncs) {
+    if (events.get(`encounter:${row.id}`)) {
+      db.prepare(`UPDATE town_encounters SET status = 'done', ended_at = COALESCE(ended_at, ?) WHERE id = ?`)
+        .run(nowIso, row.id);
+      continue;
+    }
+    const outcome = settleEncounterOutcome({ messageCount: 0, resultCode: 'interrupted', nowUtcMs: nowMs });
+    const summary = templateEncounterSummary({
+      outcome,
+      nameA: staleAgentName(row.char_a) || decodeAgentId(row.char_a),
+      nameB: staleAgentName(row.char_b) || decodeAgentId(row.char_b),
+      locationName: db.prepare('SELECT name FROM town_locations WHERE id = ?').get(row.location_id)?.name || '小镇',
+    });
+    try {
+      db.transaction(() => {
+        db.prepare(`UPDATE town_encounters SET status = 'done', ended_at = ?, summary = ?, outcome_json = ? WHERE id = ?`)
+          .run(nowIso, summary, JSON.stringify(outcome), row.id);
+        const actorIds = appendStaleEncounterExperience(row, summary, outcome, nowMs);
+        applyEncounterNeedEffects(worldId, actorIds, row.id, outcome, nowMs);
+      })();
+      settled++;
+    } catch (err) {
+      console.warn(`[town] stale encounter #${row.id} settlement failed:`, err?.message || err);
+    }
+  }
+  console.log(`[town] closed ${activeEncs.length} stale encounter(s) on boot (${settled} newly settled)`);
+}
+
+/** 重启收尾用的展示名（此时运行实例未就绪，直接查表；找不到回退 agentKey）。 */
+function staleAgentName(encodedId) {
+  const agentKey = decodeAgentId(encodedId);
+  const [kind, idStr] = agentKey.split(':');
+  const id = Number(idStr);
+  if (kind === 'npc') return getDb().prepare('SELECT display_name FROM town_npcs WHERE id = ?').get(id)?.display_name || null;
+  if (kind === 'char') return getDb().prepare('SELECT display_name FROM characters WHERE id = ?').get(id)?.display_name || null;
+  return null;
+}
+
+/** 重启收尾的经历入账：仅当双方都能解析为在册活身份时追加（否则只落事实，不投事件）。 */
+function appendStaleEncounterExperience(row, summary, outcome, occurredAt) {
+  const registry = createTownActorRegistry(getDb());
+  const world = registry.getWorldState();
+  const actorIds = [];
+  for (const encodedId of [row.char_a, row.char_b]) {
+    const actor = registry.resolveAgentKey(decodeAgentId(encodedId));
+    if (!actor || actor.archived || actor.mergedInto) return;
+    actorIds.push(actor.actorId);
+  }
+  if (actorIds.length !== 2 || new Set(actorIds).size !== 2) return null;
+  const events = encounterEventService();
+  if (events.get(`encounter:${row.id}`)) return actorIds;
+  events.append({
+    eventId: `encounter:${row.id}`, worldId: world.worldId, worldEpoch: world.epoch,
+    type: 'town.encounter.happened', occurredAt,
+    actorIds,
+    locationKey: getDb().prepare('SELECT key FROM town_locations WHERE id = ?').get(row.location_id)?.key || null,
+    source: { system: 'town.encounters', entityId: `encounter:${row.id}` },
+    payload: {
+      encounterId: row.id, summary: String(summary).slice(0, 200),
+      interactionType: outcome.interactionType, resultCode: outcome.resultCode, ruleVersion: outcome.ruleVersion,
+    },
+  }, [TOWN_EXPERIENCE_CONSUMER]);
+  return actorIds;
 }
 
 /** 每张图各自落盘后作废异步回调（停止调度 / 世界重载） */
@@ -506,41 +700,430 @@ function reconcileSimulationScope() {
   return selected;
 }
 
-function tickTownSimulation() {
+function tickTownSimulation(nowUtcMs = null) {
   const scope = reconcileSimulationScope();
   // 只推进本图的 actor：多图共享同一个世界账本，不按图过滤的话，
   // 别的图读不到本图 agent（allowsAction=false），会把本图刚启动的动作取消掉
-  state.simulation?.tick({ actorIds: [...scope] });
+  const results = state.simulation?.tick({ actorIds: [...scope] }) || { actors: [] };
+  settleActionNeedEffects(results.actors, nowUtcMs);
 }
 
-function readSimulationFacts(actor, { worldEpoch, nowUtcMs, action }) {
-  const agent = state.agents.get(actor.agentKey);
+/** 生活动作完成时的需求恢复量（预置供给，M4 接入经营结算与账本扣费）。 */
+function lifeRecoveryEffects(type) {
+  const cfg = config.town.life.recovery;
+  if (type === 'life_eat') return { satiety: cfg.eatSatiety };
+  if (type === 'life_read') return { fun: cfg.readFun };
+  if (type === 'life_sit') return { comfort: cfg.sitComfort, energy: cfg.sitEnergy };
+  return null;
+}
+
+/**
+ * M4：经营性餐食场所的规则补货（库存低于阈值时向外部供应商采购）。
+ * 按小时桶来源键幂等；金额不足时跳过（不悄悄增发），下个桶再试。
+ */
+function maintainBusinessPass(now) {
+  const world = state.world;
+  if (!world || !state.map) return;
+  for (const venue of state.lifeVenues) {
+    if (!venue.business || !venue.offers.includes('eat')) continue;
+    try {
+      townBusiness().procureStock({ worldId: world.worldId, worldEpoch: world.epoch,
+        mapId: state.mapId, venueKey: venue.key, nowUtcMs: now });
+    } catch (err) {
+      console.warn('[town] procurement failed:', err?.message || err);
+    }
+  }
+}
+
+/**
+ * M5：按本地日确保每位居民的目标在册（挑选/受阻/替换都发生在日界，不逐 tick 重选）。
+ * 进度由各自的结算钩子消费（工作/阅读/进食/社交/工资）。
+ */
+function maintainGoalPass(now) {
+  const world = state.world;
+  if (!world) return;
+  const goals = townGoals();
+  const needs = townNeeds();
+  const localDay = Math.floor(now / 86400000);
+  for (const agent of state.agents.values()) {
+    if (!agent.actorId) continue;
+    try {
+      const profile = agent.profileCache ??= townNeeds().ensureProfile(world.worldId, agent.actorId, {
+        jobText: agent.kind === 'npc'
+          ? getDb().prepare('SELECT job FROM town_npcs WHERE id = ?').get(agent.refId)?.job || '' : '',
+      });
+      const hasWorkplace = agent.kind === 'npc'
+        ? !!getDb().prepare('SELECT workplace_key FROM town_npcs WHERE id = ? AND workplace_key IS NOT NULL').get(agent.refId)
+        : false;
+      agent.hasWorkplaceCache = hasWorkplace;
+      goals.ensureGoals({ worldId: world.worldId, actorId: agent.actorId,
+        profile, context: { hasWorkplace }, localDay, nowUtcMs: now });
+    } catch (err) {
+      console.warn('[town] goal pass failed:', err?.message || err);
+    }
+  }
+}
+
+/** actorId → 展示名（meta 优先，回退注册表/表查询；找不到回退 actorId 截断）。 */
+function actorDisplayName(actorId) {
+  for (const meta of state.meta.values()) if (meta.actorId === actorId) return meta.displayName;
+  const actor = createTownActorRegistry(getDb()).getActor(actorId, state.world?.worldId, { followMerged: false });
+  if (actor?.npcExists) return getDb().prepare('SELECT display_name FROM town_npcs WHERE id = ?').get(actor.npcId)?.display_name;
+  if (actor?.characterExists) return getDb().prepare('SELECT display_name FROM characters WHERE id = ?').get(actor.characterId)?.display_name;
+  return actorId;
+}
+
+/** actorId → NPC 行 id（邀请主讲人需要 NPC 档案；角色/玩家返回 null）。 */
+function actorNpcId(actorId) {
+  const actor = createTownActorRegistry(getDb()).getActor(actorId, state.world?.worldId, { followMerged: false });
+  return actor?.npcExists ? actor.npcId : null;
+}
+
+/**
+ * M6：规则事件导演——只能从已结算事实建立候选：
+ * 餐食见底（经营停摆）、目标达成（值得庆祝）、关系里程碑（熟络起来）。
+ * repeat_key 按天分桶幂等；条件消失自动「自行处理」，过期自动关闭，均无惩罚。
+ * 邀请只在聚焦图 + 自动 LLM + 事件系统开启时生成（复用镇民 ambient 奇遇管线）。
+ */
+function maintainDirectorPass(now) {
+  const world = state.world;
+  if (!world || !state.map) return;
+  try {
+    maintainDirectorDetection(now, world);
+    maintainDirectorInvitation(now, world);
+  } catch (err) {
+    console.warn('[town] director pass failed:', err?.message || err);
+  }
+}
+
+function maintainDirectorDetection(now, world) {
+  const director = townDirector();
+  const day = Math.floor(now / 86400000);
+  const dayStart = day * 86400000;
+
+  // ── 检测 1：经营性餐食场所库存见底 ──
+  for (const venue of state.lifeVenues) {
+    if (!venue.business || !venue.offers.includes('eat')) continue;
+    const stock = townBusiness().ensureVenueStock({ worldId: world.worldId, worldEpoch: world.epoch,
+      mapId: state.mapId, venueKey: venue.key });
+    const quantity = getDb().prepare('SELECT quantity FROM town_resource_stocks WHERE stock_id = ?').get(stock.stockId)?.quantity ?? 0;
+    const repeatKey = `stockout:${state.mapId}:${venue.key}:${day}`;
+    if (quantity <= 0) {
+      const venueName = state.locations.find(l => l.key === venue.key)?.name || venue.key;
+      const ownerNpcId = getDb().prepare('SELECT id FROM town_npcs WHERE workplace_key = ?').get(venue.key)?.id ?? null;
+      director.propose({ worldId: world.worldId, repeatKey, kind: 'stockout', mapId: state.mapId,
+        payload: { venueKey: venue.key, venueName, ownerNpcId, locationKey: venue.key,
+          prompt: `镇上的${venueName}食材见底了，能不能帮忙想想办法？` }, nowUtcMs: now });
+    } else {
+      director.resolve({ worldId: world.worldId, repeatKey, nowUtcMs: now }); // 补货恢复 → 自行处理
+    }
+  }
+
+  // ── 检测 2：今日完成的目标 ──
+  for (const row of getDb().prepare(`SELECT actor_id, type, title FROM town_resident_goals
+    WHERE world_id = ? AND status = 'completed' AND updated_utc_ms >= ?`).all(world.worldId, dayStart)) {
+    const displayName = actorDisplayName(row.actor_id);
+    director.propose({ worldId: world.worldId, repeatKey: `goal-done:${row.actor_id}:${row.type}:${day}`,
+      kind: 'goal_done', mapId: state.mapId,
+      payload: { actorId: row.actor_id, goalTitle: row.title, ownerNpcId: actorNpcId(row.actor_id),
+        prompt: `${displayName}刚刚达成了自己的小目标「${row.title}」，值得庆祝一番！` }, nowUtcMs: now });
+  }
+
+  // ── 检测 3：关系里程碑（熟悉度跨过 50）──
+  for (const row of getDb().prepare(`SELECT from_actor_id, to_actor_id, familiarity FROM town_actor_relationships
+    WHERE world_id = ? AND familiarity >= 50 AND updated_at_utc_ms >= ?`).all(world.worldId, dayStart)) {
+    const pair = [row.from_actor_id, row.to_actor_id].sort().join(':');
+    const nameA = actorDisplayName(row.from_actor_id);
+    const nameB = actorDisplayName(row.to_actor_id);
+    director.propose({ worldId: world.worldId, repeatKey: `friendship:${pair}:${Math.floor(row.familiarity / 25)}`,
+      kind: 'friendship', mapId: state.mapId,
+      payload: { actorIds: [row.from_actor_id, row.to_actor_id], ownerNpcId: actorNpcId(row.from_actor_id),
+        prompt: `${nameA}和${nameB}最近越来越熟络了，也许可以一起做点什么。` }, nowUtcMs: now });
+  }
+
+  // ── 到期关闭 + 邀请节奏控制 ──
+  director.expireDue({ worldId: world.worldId, nowUtcMs: now });
+}
+
+function maintainDirectorInvitation(now, world) {
+  const director = townDirector();
+  if (!(isMapFocused(state.mapId) && config.features.townLLM && config.features.townAutoLLM
+    && config.features.events)) return;
+  const candidate = director.nextInvite({ worldId: world.worldId, nowUtcMs: now });
+  if (candidate && spawnDirectorInvitation(candidate)) {
+    director.markInvited({ worldId: world.worldId, repeatKey: candidate.repeat_key, nowUtcMs: now });
+  }
+}
+
+/** 把导演候选变成一条镇民 ambient 奇遇（玩家可在奇遇页参与；失败/冲突静默让位）。 */
+function spawnDirectorInvitation(candidate) {
+  try {
+    const payload = JSON.parse(candidate.payload_json || '{}');
+    const npcMetas = [...state.meta.values()].filter(m => m.kind === 'npc');
+    if (npcMetas.length === 0) return false;
+    const ownerMeta = npcMetas.find(m => m.refId === payload.ownerNpcId) || npcMetas[0];
+    const companionMeta = npcMetas.find(m => m !== ownerMeta) || null;
+    const owner = getDb().prepare('SELECT * FROM town_npcs WHERE id = ?').get(ownerMeta.refId);
+    if (!owner) return false;
+    const companion = companionMeta
+      ? getDb().prepare('SELECT display_name, appearance_desc, persona FROM town_npcs WHERE id = ?').get(companionMeta.refId)
+      : null;
+    enqueueLlm(async () => {
+      try {
+        await generateTownNpcEvent(owner, {
+          customPrompt: payload.prompt,
+          ambient: true,
+          companionNpc: companion ? { name: companion.display_name, appearance: companion.appearance_desc,
+            persona: companion.persona } : undefined,
+          locationName: payload.venueName || null,
+          locationKey: payload.locationKey || null,
+          manual: false,
+          worldId: state.world?.worldId ?? null,
+          worldEpoch: state.world?.epoch ?? null,
+          durationMin: config.town.ambientStoryDurationMin,
+        });
+      } catch (err) {
+        if (err?.message !== 'ALREADY_ACTIVE_EVENT') console.warn('[town] director invitation failed:', err?.message || err);
+      }
+    });
+    return true;
+  } catch (err) {
+    console.warn('[town] director invitation spawn failed:', err?.message || err);
+    return false;
+  }
+}
+
+function findAgentByActorId(actorId) {
+  for (const agent of state.agents.values()) if (agent.actorId === actorId) return agent;
+  return null;
+}
+
+/**
+ * M1/M2 行动效果结算：完成的动作按真实时长/类型恢复需求，来源键保证同一动作
+ * 只结算一次（rest:{actionId} / life_eat:{actionId} ...）。work_shift 是纯出勤，
+ * 不在这里发工资或产物（那是 M4 经营结算的事）；移动连续不可达的生活计划被放弃。
+ */
+function settleActionNeedEffects(results, nowUtcMs = null) {
+  const world = state.world;
+  if (!world) return;
+  const appliedAt = Number.isSafeInteger(nowUtcMs) ? nowUtcMs : Date.now();
+  const perHour = config.town.needs.recovery.restEnergyPerHour;
+  const needs = townNeeds();
+  for (const result of results) {
+    const action = result?.action;
+    if (!action?.id || !result.actorId) continue;
+    if (result.reason === 'completed') {
+      let effects = null;
+      let sourceKey = null;
+      if (action.type === 'rest') {
+        const durationMs = Number(action.payload?.durationMs) || 0;
+        if (durationMs > 0) {
+          effects = { energy: perHour * (durationMs / 3600_000) };
+          sourceKey = `rest:${action.id}`;
+        }
+      } else {
+        effects = lifeRecoveryEffects(action.type);
+        sourceKey = effects ? `${action.type}:${action.id}` : null;
+      }
+      if (effects && sourceKey) {
+        try {
+          needs.applyNeedEffects({ worldId: world.worldId, actorId: result.actorId,
+            sourceKey, effects, nowUtcMs: appliedAt });
+        } catch (err) {
+          console.warn('[town] action need recovery failed:', err?.message || err);
+        }
+      }
+      // M4 经营结算：work_shift 出勤 → 场所发工资；life_eat → 居民付餐费（余额不足走免费公共餐食）。
+      // 都以动作 id 为来源键，只结算一次。
+      if (state.map && action.target && (action.type === 'work_shift' || action.type === 'life_eat')) {
+        try {
+          if (action.type === 'work_shift') {
+            const wage = townBusiness().payWageFromVenue({ worldId: world.worldId, worldEpoch: world.epoch,
+              mapId: state.mapId, venueKey: action.target, actorId: result.actorId,
+              actionId: action.id, nowUtcMs: appliedAt });
+            // M5：工资到账推进「攒零花钱」目标（与工资同一来源键，不重复计入）
+            if (wage === 'paid') {
+              townGoals().applyProgress({ worldId: world.worldId, actorId: result.actorId,
+                sourceKey: `wage:${action.id}`, kind: 'wage', amount: config.town.economy.wagePerShift,
+                nowUtcMs: appliedAt, localDay: Math.floor(appliedAt / 86400000) });
+            }
+          } else {
+            townBusiness().chargeMeal({ worldId: world.worldId, worldEpoch: world.epoch,
+              mapId: state.mapId, venueKey: action.target, actorId: result.actorId,
+              actionId: action.id, nowUtcMs: appliedAt });
+          }
+        } catch (err) {
+          console.warn('[town] business settlement failed:', err?.message || err);
+        }
+      }
+      // M5：目标/技能进度从已结算事实消费（来源键与动作绑定，不重复计入）
+      const progressKind = action.type === 'work_shift' ? 'work'
+        : action.type === 'life_read' ? 'read' : action.type === 'life_eat' ? 'eat' : null;
+      if (progressKind) {
+        try {
+          townGoals().applyProgress({ worldId: world.worldId, actorId: result.actorId,
+            sourceKey: `${action.type}:${action.id}`, kind: progressKind, amount: 1,
+            nowUtcMs: appliedAt, localDay: Math.floor(appliedAt / 86400000) });
+        } catch (err) {
+          console.warn('[town] goal progress failed:', err?.message || err);
+        }
+      }
+      if (lifeRecoveryEffects(action.type)) {
+        const agent = findAgentByActorId(result.actorId);
+        if (agent) agent.lifePlan = null; // 生活计划完成：下一拍决策重新评估
+      }
+      continue;
+    }
+    // 生活计划的目标连续不可达：放弃该计划（失败也有后续，不死循环重试同一目标）
+    if (result.reason === 'PATH_UNREACHABLE' && action.type === 'move_to') {
+      const agent = findAgentByActorId(result.actorId);
+      if (agent?.lifePlan?.target === action.target) {
+        agent.lifePlanFailures = (agent.lifePlanFailures ?? 0) + 1;
+        if (agent.lifePlanFailures >= config.town.life.maxMoveFailures) {
+          agent.lifePlan = null;
+          agent.lifePlanFailures = 0;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * M1：按逻辑时间结算本图全部居民的需求。衰减量来自时间差（游标持久化在
+ * town_resident_needs），与 tick 次数、页面刷新、分批处理无关。
+ */
+function settleMapNeeds(now) {
+  const world = state.world;
+  if (!world) return;
+  const needs = townNeeds();
+  const agents = [...state.agents.values()].filter(a => a.actorId);
+  const profiles = needs.getProfiles(world.worldId, agents.map(a => a.actorId));
+  for (const agent of agents) {
+    try {
+      needs.settleNeeds(world.worldId, agent.actorId, now,
+        { personality: profiles.get(agent.actorId)?.personality });
+    } catch (err) {
+      console.warn('[town] needs settle failed:', err?.message || err);
+    }
+  }
+}
+
+/** 生活动作的活动文案（地图气泡/人物说明用，均来自真实计划）。 */
+const LIFE_ACTIVITY_TEXT = Object.freeze({ eat: '在找点吃的', read: '在书斋读书', sit: '坐下歇会儿' });
+
+/** 终态动作：不再被 FSM 持有（演出层让位判断与 busy 锚定用）。 */
+const TERMINAL_ACTION_PHASES = new Set(['completed', 'cancelled', 'failed']);
+
+/** 场所生活占用：当前 reserved/running 生活动作按目标地点计数（客满判断用）。
+ * town_actions 是持续增长的意图日志（百万行量级），必须走 town_actions_life_active
+ * 部分索引而非全前缀扫描；再按 world+2.5s TTL 记忆化——它只喂决策评分，滞后一拍无害，
+ * 否则每个空闲居民每次模拟拍都要全量聚合一次，事件循环会被持续堵死。 */
+let lifeOccupancyCache = null; // { worldId, worldEpoch, at, map }
+function lifeVenueOccupancy(world) {
+  const nowMs = Date.now();
+  if (lifeOccupancyCache && lifeOccupancyCache.worldId === world.worldId
+    && lifeOccupancyCache.worldEpoch === world.epoch && nowMs - lifeOccupancyCache.at < 2500) {
+    return lifeOccupancyCache.map;
+  }
+  const map = getDb().prepare(`SELECT target, count(*) n FROM town_actions
+    WHERE world_id = ? AND world_epoch = ? AND type IN ('life_eat','life_read','life_sit')
+    AND status IN ('reserved','running') AND target IS NOT NULL GROUP BY target`)
+    .all(world.worldId, world.epoch)
+    .reduce((map, row) => (map[row.target] = row.n, map), {});
+  lifeOccupancyCache = { worldId: world.worldId, worldEpoch: world.epoch, at: nowMs, map };
+  return map;
+}
+
+/**
+ * M2：空闲居民的生活计划（滞回 + 确定性决策）。
+ * 滞回带内保留现计划（防相邻 tick 换目标抖动）；移动连续失败达到上限则放弃，
+ * 交还游走/等待逻辑（失败也有后续，不死循环重试同一目标）。
+ */
+function pickLifePlan(agent, nowUtcMs) {
+  const world = state.world;
+  if (!world || !agent.actorId || !state.map) { agent.lifePlan = null; return null; }
+  const needs = townNeeds();
+  const current = agent.lifePlan ?? null;
+  // 需求快照：读上一次结算的游标值（settleMapNeeds 在 tick 末尾推进，恰好一拍滞后）
+  const needsSnapshot = needs.getNeeds(world.worldId, agent.actorId, nowUtcMs) ?? undefined;
+  const profile = needs.getProfiles(world.worldId, [agent.actorId]).get(agent.actorId);
+  let decision = null;
+  try {
+    decision = pickIdleLifeAction({
+      needs: needsSnapshot, personality: profile?.personality, interests: profile?.interests,
+      venues: state.lifeVenues, position: { x: agent.x ?? 0, y: agent.y ?? 0 },
+      current, config: config.town.life, nowUtcMs,
+      occupancy: lifeVenueOccupancy(world),
+      goalBias: townGoals().getDecisionBias(world.worldId, agent.actorId),
+      worldSeed: world.seed, actorId: agent.actorId,
+    });
+  } catch (err) {
+    console.warn('[town] life decision failed:', err?.message || err);
+  }
+  if (decision) {
+    if (!current || current.target !== decision.target) agent.lifePlanFailures = 0;
+    agent.lifePlan = { action: decision.action, target: decision.target };
+    agent.lifePlanDecidedAt = nowUtcMs;
+  } else {
+    // 无决策 = 滞回带已退出且无新候选，或本就空闲：清空计划，交还游走/等待
+    agent.lifePlan = null;
+  }
+  return agent.lifePlan;
+}
+
+function readSimulationFacts(actor, { worldEpoch, nowUtcMs, action }) {  const agent = state.agents.get(actor.agentKey);
   let intent = 'wait', loc = null, target = null, scheduleKey = 'idle', sleeping = false, hasOriginalTask = false;
   if (agent) {
     advanceAgent(agent, nowUtcMs);
     if (agent.kind === 'npc') {
       const slot = getRoutineSlot(agent, nowUtcMs);
       hasOriginalTask = !!slot;
-      const home = getDb().prepare('SELECT home_location_id FROM town_npcs WHERE id = ?').get(agent.refId)?.home_location_id;
+      const npcRow = getDb().prepare('SELECT home_location_id, workplace_key FROM town_npcs WHERE id = ?').get(agent.refId);
+      const home = npcRow?.home_location_id;
       loc = slot?.locationKey === 'home' ? state.locations.find(l => l.id === home) : locationFromKey(slot?.locationKey);
       target = loc?.key || (slot?.locationKey !== 'home' ? slot?.locationKey : null) || null;
       scheduleKey = slot ? JSON.stringify([slot.start, slot.end, slot.locationKey, slot.actionType || null]) : 'idle';
       // 职业地点/动作标签是结构化配置；不从 activityText 猜测已工作。
-      intent = slot?.actionType === 'work_shift' || (target && agent.traits?.workLocationKey === target) ? 'work'
+      // 岗位判定（工作接线的权威来源是 town_npcs.workplace_key）：作息段就在绑定岗位上，
+      // 或作息段地点与绑定岗位是同类经营场所（LLM 作息常指同类的另一家分店）→ 明确在岗。
+      const workplaceKey = npcRow?.workplace_key || null;
+      const workplaceKind = workplaceKey
+        ? state.locations.find(l => l.key === workplaceKey)?.businessKind || null : null;
+      const slotKind = loc?.businessKind && loc.businessKind !== 'none' ? loc.businessKind : null;
+      const atWork = !!target && (target === workplaceKey
+        || (!!workplaceKind && workplaceKind !== 'none' && slotKind === workplaceKind));
+      intent = slot?.actionType === 'work_shift' || atWork ? 'work'
         : slot?.actionType === 'rest' || slot?.sleeping === true ? 'rest' : 'wait';
       sleeping = intent === 'rest';
       agent.activityText = slot?.activity || '在镇上休息';
+      agent.strollTextAllowed = !slot;
       if (intent !== 'rest') {
         // 除睡觉外都在镇上走动：作息段只保留活动文案与睡觉判定，不再钉住地点；
-        // 营业时段的岗位居民随后会被岗位适配器覆盖成 work，照旧钉在店里（经营依赖人在岗）。
+        // 但明确岗位（work_shift 作息段/工作地点绑定）钉在工作地点——经营依赖人在岗，
+        // 闲逛与生活计划不得劫持工作时间（§5.2 明确工作优先于自由时间决策）。
         const localMinute = townLocalTime(nowUtcMs).minuteOfDay;
         if (!slot && !agent.traits?.nightOwl && (localMinute >= 23 * 60 || localMinute < 6 * 60)) {
           // 深夜无作息的居民回家睡觉（有作息的居民夜里由睡觉段接管）
           const homeLoc = state.locations.find(l => l.id === home);
           if (homeLoc) { loc = homeLoc; target = homeLoc.key; intent = 'rest'; sleeping = true; agent.activityText = '睡得正香'; }
+        } else if (intent === 'work') {
+          // 明确岗位：保持在工作地点
         } else {
-          const stroll = pickStrollLocation(agent, nowUtcMs);
-          if (stroll) { loc = stroll; target = stroll.key; intent = 'wait'; if (!slot) agent.activityText = '在镇上闲逛'; }
+          // M2：空闲（wait）时先问生活决策（吃/读/落座，带滞回）。生活动作在飞时锚定
+          // 在飞意图不重跑决策（防占用/需求游标的拍间抖动把在飞 move_to 打成 SCHEDULE_CHANGED）
+          const busyLife = action && agent.lifePlan && action.target === agent.lifePlan.target
+            && !TERMINAL_ACTION_PHASES.has(action.phase);
+          const lifePlan = busyLife ? agent.lifePlan : pickLifePlan(agent, nowUtcMs);
+          const lifeLoc = lifePlan ? state.locations.find(l => l.key === lifePlan.target) : null;
+          if (lifePlan && lifeLoc) {
+            loc = lifeLoc; target = lifeLoc.key; intent = 'wait';
+            scheduleKey = `life:${lifePlan.action}:${lifePlan.target}`;
+            agent.activityText = LIFE_ACTIVITY_TEXT[lifePlan.action] || agent.activityText;
+          } else {
+            // 自然走动改由演出层驱动（maintainStrollPass）：facts 保持未承诺空闲——
+            // 游走是纯显示效果，wait 规则按 idle.committed 拒绝，不产生 town_actions 行
+            loc = null; target = null; scheduleKey = 'idle';
+          }
         }
       }
     } else {
@@ -551,6 +1134,7 @@ function readSimulationFacts(actor, { worldEpoch, nowUtcMs, action }) {
       loc = sleeping ? getHomeLocation(agent.refId) : state.matcher(activity?.location);
       const scheduled = !!activity?.startTime;
       hasOriginalTask = sleeping || !isIdleScheduleActivity(activity);
+      agent.strollTextAllowed = !scheduled;
       // 日程地点匹配不到镇内 POI 时不判离镇（日程 location 是 LLM 自由文本，对不上号是常态）：
       // 一律当「没被安排到镇内地点」处理，人留在镇上，活动文案保留日程叙事
       intent = sleeping ? 'rest' : activity?.tags?.includes('work') && loc ? 'work' : 'wait';
@@ -560,20 +1144,45 @@ function readSimulationFacts(actor, { worldEpoch, nowUtcMs, action }) {
       // 入驻角色：没在睡觉、日程也没把人钉到镇内地点时，同样在镇上到处走动。
       // 日程醒着的角色（当前时段有安排且非睡眠档）深夜也照常游走，否则会被深夜闸门整夜冻在原地
       if (!sleeping && intent === 'wait' && !loc) {
-        const stroll = pickStrollLocation(agent, nowUtcMs, { allowNight: !!activity && activity.replyDelay !== -1 });
-        if (stroll) { loc = stroll; target = stroll.key; if (!scheduled) agent.activityText = '在镇上闲逛'; }
+        // M2：日程没安排的生活动作优先于单纯闲逛（同 NPC 口径，尊重滞回）
+        agent.strollAllowNight = !!activity && activity.replyDelay !== -1;
+        const busyLife = action && agent.lifePlan && action.target === agent.lifePlan.target
+          && !TERMINAL_ACTION_PHASES.has(action.phase);
+        const lifePlan = busyLife ? agent.lifePlan : pickLifePlan(agent, nowUtcMs);
+        const lifeLoc = lifePlan ? state.locations.find(l => l.key === lifePlan.target) : null;
+        if (lifePlan && lifeLoc) {
+          loc = lifeLoc; target = lifeLoc.key;
+          scheduleKey = `life:${lifePlan.action}:${lifePlan.target}`;
+          agent.activityText = LIFE_ACTIVITY_TEXT[lifePlan.action] || agent.activityText;
+        } else {
+          // 同 NPC：自然走动由演出层驱动（maintainStrollPass），facts 保持未承诺空闲，
+          // 不产生 town_actions 行
+          loc = null; target = null;
+        }
       }
     }
     agent.sleeping = sleeping;
     agent.presence = intent === 'off_town' ? 'off_town' : 'town';
     if (intent === 'off_town' && agent.slotKey && state.occupied.get(agent.slotKey) === agent.agentKey) state.occupied.delete(agent.slotKey);
+    // 演出层让位标记：FSM 承诺中的居民（作息/生活/避雨/钉点等待在飞）不由自然走动接管
+    agent.fsmBusy = sleeping || intent !== 'wait' || target !== null
+      || !!(action && !TERMINAL_ACTION_PHASES.has(action.phase));
   }
   const arrived = !!(agent && loc && !agent.path && chebyshev(agent, loc) <= (loc.radius ?? 2));
+  // M2：需求快照（供生活规则评分）与生活计划（空闲动作 + 目标 + 时长）
+  const needsSnapshot = state.world
+    ? townNeeds().getNeeds(state.world.worldId, actor.actorId, nowUtcMs) : null;
+  const lifePlan = agent?.lifePlan ?? null;
+  const lifeDurationMin = lifePlan ? config.town.life.durationsMin[lifePlan.action] : null;
   const facts = { actorId: actor.actorId, worldEpoch, intent, scheduleKey, target,
     targetExists: target === null || !!loc, arrived, locationKey: arrived ? target : null,
     allowsAction: !!agent && actor.participating && agent.encounterId === null && !isChatHeld(agent, nowUtcMs)
       && intent !== 'off_town',
-    durationMs: 15 * 60000, minDurationMs: 60000 };
+    durationMs: lifeDurationMin ? lifeDurationMin * 60000 : 15 * 60000, minDurationMs: 60000,
+    idleCommitted: target !== null,
+    needsSatiety: needsSnapshot?.satiety, needsEnergy: needsSnapshot?.energy, needsSocial: needsSnapshot?.social,
+    needsFun: needsSnapshot?.fun, needsComfort: needsSnapshot?.comfort, needsSecurity: needsSnapshot?.security,
+    lifeAction: lifePlan?.action ?? '', lifeTarget: lifePlan?.target ?? null };
   const enriched = facts;
   if (!agent || hasOriginalTask
       || !enriched.allowsAction || enriched.intent !== 'wait' || enriched.target !== null
@@ -595,7 +1204,7 @@ function readSimulationFacts(actor, { worldEpoch, nowUtcMs, action }) {
   if (shelter === enriched) return enriched;
   const atHome = !agent.path && chebyshev(agent, home) <= (home.radius ?? 2);
   agent.activityText = atHome ? '在自己家中避雨' : '正在回家避雨';
-  return { ...shelter, arrived: atHome, locationKey: atHome ? home.key : null };
+  return { ...shelter, idleCommitted: true, arrived: atHome, locationKey: atHome ? home.key : null };
 }
 
 /** 素材库 → 正/背spirit URL（齐备才有值） */
@@ -782,7 +1391,7 @@ function locationFromKey(key) {
   return state.locations.find(l => l.key === key) || state.matcher(key) || null;
 }
 
-// ── 居民游走（模拟引擎事实层）：除睡觉与营业在岗外，全镇到处走动 ──
+// ── 居民游走（纯演出层）：空闲居民的闲逛直接驱动走位，不产生 town_actions 行 ──
 
 const TOWN_STROLL_PERIOD_MS = 30_000;    // 换游走目的地的时间桶
 const TOWN_STROLL_REST_MS = 60_000;      // 到站后的停留时长
@@ -793,10 +1402,10 @@ const strollHash = (key, seed) => {
   return h;
 };
 
-/** 当前时间桶的游走目的地（全镇非住宅地点）。桶内（以及行走中）重复读到的事实必须稳定，
- * 否则引擎会不停 SCHEDULE_CHANGED；雨天原地歇脚让位给避雨，深夜安静（nightOwl 特质或
- * 日程醒着的入驻角色除外）；正在前往/脚下的地点不重选，保证每个桶都真的迈步；
- * 到站后停留 TOWN_STROLL_REST_MS 再启程。 */
+/** 当前时间桶的游走目的地（全镇非住宅地点）。桶内（以及行走中）重复调用必须稳定；
+ * 雨天原地歇脚让位给避雨，深夜安静（nightOwl 特质或日程醒着的入驻角色除外）；
+ * 正在前往/脚下的地点不重选，保证每个桶都真的迈步；
+ * 到站后停留 TOWN_STROLL_REST_MS 再启程。供演出层 maintainStrollPass 消费。 */
 function pickStrollLocation(agent, nowUtcMs, { allowNight = false } = {}) {
   if (isRaining()) return null;
   const localMinute = townLocalTime(nowUtcMs).minuteOfDay;
@@ -818,6 +1427,38 @@ function pickStrollLocation(agent, nowUtcMs, { allowNight = false } = {}) {
   const targetKey = candidates.length ? candidates[strollHash(agent.agentKey, bucket) % candidates.length].key : null;
   agent.stroll = { bucket, targetKey };
   return state.locations.find(l => l.key === targetKey) || null;
+}
+
+/**
+ * 自然走动（纯演出）：空闲居民的闲逛由演出层直接驱动（assignTarget 寻路占位 +
+ * advanceAgent 推进 + broadcastTownMove 广播），不产生任何 town_actions 行——
+ * 游走是显示效果而非模拟事实。FSM 承诺中的居民（作息/生活/避雨/钉点在飞，
+ * readSimulationFacts 打 fsmBusy 标）、相遇与驻聊中的居民让位；雨天与深夜
+ * （pickStrollLocation 返回 null）就地歇脚。
+ */
+function maintainStrollPass(now) {
+  if (!state.map) return;
+  for (const agent of state.agents.values()) {
+    if (!agent.actorId) continue;
+    if (agent.simulationMoveId) { agent.strollWalk = false; continue; } // FSM 接管移动
+    if (agent.fsmBusy || agent.sleeping || agent.presence === 'off_town'
+      || agent.encounterId !== null || isChatHeld(agent, now)) {
+      if (agent.strollWalk && agent.path) stopAgentMovement(agent); // 让位：放弃纯演出走位
+      agent.strollWalk = false;
+      continue;
+    }
+    const loc = pickStrollLocation(agent, now, { allowNight: agent.strollAllowNight === true });
+    if (!loc) {
+      if (agent.strollWalk && agent.path) stopAgentMovement(agent);
+      agent.strollWalk = false;
+      continue;
+    }
+    if (!agent.path && agent.targetLocId !== loc.id) {
+      if (!assignTarget(agent, loc, now, { strictRadius: true })) { agent.strollWalk = false; continue; }
+      agent.strollWalk = true;
+    }
+    if (agent.strollTextAllowed !== false) agent.activityText = '在镇上闲逛';
+  }
 }
 
 // ── L1 规则触发 ──
@@ -857,7 +1498,8 @@ function scanEncounters(now) {
   if (state.encounters.size >= config.town.maxActiveEncounters) return;
   if (now - (state.lastEncounterStartAt ?? 0) < config.town.encounterMinStartGapMin * 60_000) return;
 
-  // 按 POI 分组（仅统计已到站、睡醒、空手的居民）
+  // 按 POI 分组（仅统计已到站、睡醒、空手的居民）；成员按 agentKey 排序，
+  // 保证同一快照下配对顺序稳定（配合确定性随机域，相遇判定可复现）
   const groups = new Map();
   for (const agent of state.agents.values()) {
     if (agent.encounterId !== null || isChatHeld(agent, now) || agent.sleeping || agent.presence === 'off_town') continue;
@@ -865,6 +1507,9 @@ function scanEncounters(now) {
     if (agent.x === null || agent.y === null) continue;
     if (!groups.has(agent.targetLocId)) groups.set(agent.targetLocId, []);
     groups.get(agent.targetLocId).push(agent);
+  }
+  for (const members of groups.values()) {
+    members.sort((a, b) => (a.agentKey < b.agentKey ? -1 : a.agentKey > b.agentKey ? 1 : 0));
   }
 
   let startedThisTick = 0;
@@ -889,7 +1534,30 @@ function scanEncounters(now) {
         if (withdrawn(moodA)) prob *= 0.4;
         if (withdrawn(moodB)) prob *= 0.4;
 
-        if (Math.random() < prob) {
+        // M1：性格修正相遇倾向（外向者更愿意碰面）；缺档案时回退中性 0.5 → 因子 1
+        if (state.world) {
+          const profiles = townNeeds().getProfiles(state.world.worldId, [a.actorId, b.actorId].filter(Boolean));
+          prob *= pairEncounterFactor(
+            profiles.get(a.actorId)?.personality,
+            profiles.get(b.actorId)?.personality);
+          // M3：关系反馈——越熟/好感越高越容易碰面（下一步决策读上一次结算的关系）
+          if (a.actorId && b.actorId) {
+            const rels = townRelationships();
+            const factorA = relationshipEncounterFactor(rels.listOutgoing(state.world.worldId, a.actorId).get(b.actorId));
+            const factorB = relationshipEncounterFactor(rels.listOutgoing(state.world.worldId, b.actorId).get(a.actorId));
+            prob *= (factorA + factorB) / 2;
+          }
+        }
+
+        // 确定性随机域：同一世界种子、同一对居民、同一分钟桶内判定恒定，
+        // 相同测试快照与输入可复现（演出类随机仍用 Math.random，不影响世界事实）
+        const draw = encounterScanRandom({
+          seed: state.world?.seed ?? null,
+          mapId: state.mapId,
+          pair: key,
+          bucket: Math.floor(now / 60_000),
+        });
+        if (draw < prob) {
           startEncounter(a, b, loc, now);
           startedThisTick++;
         }
@@ -919,6 +1587,8 @@ function startEncounter(a, b, loc, now) {
   a.encounterId = enc.id;
   b.encounterId = enc.id;
   a.dirty = b.dirty = true;
+  // 相遇打断生活计划（正在赶路/用餐的居民先社交）：结束后由决策层重新评估
+  a.lifePlan = b.lifePlan = null;
   state.lastEncounterStartAt = now;
 
   broadcastTownEncounterStart({
@@ -946,16 +1616,102 @@ function endEncounter(enc, now) {
   }
   state.pairCooldown.set(pairKey(enc.a, enc.b), now + config.town.encounterCooldownHours * 3600_000);
 
-  db.prepare(`UPDATE town_encounters SET status = 'done', ended_at = ? WHERE id = ?`)
-    .run(new Date(now).toISOString().slice(0, 19).replace('T', ' '), enc.id);
+  // M0 规则结算先行：结构化结果 + 模板摘要 + 经历事件在同一事务落库；
+  // 广播与 LLM 润色是表现，在事务提交后才执行。失败时行保持 chatting，重启由
+  // closeStaleEncounters 保守恢复，不会出现「已结束但没结算」的事实缺口。
+  settleEncounterFacts(enc, now);
   broadcastTownEncounterEnd({ id: enc.id });
 
   if (enc.messages.length > 0) {
-    // 任何组合（镇民×镇民 / 镇民×角色 / 角色×角色）的相遇都沉淀摘要并入账经历
-    // 只有聚焦图才花 LLM：玩家离开后残留的相遇直接静默收尾（不写摘要、不升级奇遇）
+    // 相遇摘要润色与环境奇遇升级是「给人看」的表现：只在聚焦图消耗 LLM；
+    // 非聚焦图/零模型的相遇已经在上面按规则结算完毕。
     if (isMapFocused(state.mapId)) {
       enqueueLlm(() => runEncounterSummary(enc));
       maybeUpgradeToAmbientStory(enc, now);
+    }
+  }
+}
+
+/** 相遇收尾的规则结算：结果代码 + 模板摘要 + 经历事件，单事务原子落库。 */
+function settleEncounterFacts(enc, now) {
+  try {
+    const db = getDb();
+    const metaA = state.meta.get(enc.a);
+    const metaB = state.meta.get(enc.b);
+    const endUtcMs = Number.isFinite(enc.endAt) ? Math.min(enc.endAt, now) : now;
+    const outcome = settleEncounterOutcome({
+      messageCount: enc.messages.length,
+      durationMs: Math.max(0, endUtcMs - enc.startedAt),
+      nowUtcMs: now,
+    });
+    const summary = templateEncounterSummary({
+      outcome,
+      nameA: metaA?.displayName || enc.a,
+      nameB: metaB?.displayName || enc.b,
+      locationName: enc.location?.name || '小镇',
+    });
+    db.transaction(() => {
+      // outcome_json 为空的行才写模板摘要：已有摘要的历史行保持原文（不批量改写旧文本）
+      db.prepare(`UPDATE town_encounters SET status = 'done', ended_at = ?,
+        summary = CASE WHEN outcome_json IS NULL THEN ? ELSE summary END, outcome_json = ?
+        WHERE id = ?`)
+        .run(new Date(now).toISOString().slice(0, 19).replace('T', ' '), summary, JSON.stringify(outcome), enc.id);
+      const actorIds = appendEncounterExperience(enc, summary, outcome, now);
+      applyEncounterNeedEffects(state.world?.worldId, actorIds, enc.id, outcome, now);
+    })();
+  } catch (err) {
+    console.warn('[town] encounter settlement failed:', err?.message || err);
+  }
+}
+
+/**
+ * 相遇的需求反馈（M1 闭环之一）：社交需求按结果代码恢复，愉快交谈留下一条
+ * 有来源的心情影响项。以 encounter:{id} 为来源键，同一相遇只生效一次。
+ */
+function applyEncounterNeedEffects(worldId, actorIds, encounterId, outcome, nowUtcMs) {
+  if (!worldId || !actorIds || actorIds.length !== 2) return;
+  const cfg = config.town.needs.recovery;
+  const social = cfg.encounterSocial[outcome.resultCode] ?? 0;
+  const needs = townNeeds();
+  for (const actorId of actorIds) {
+    try {
+      if (social > 0) {
+        needs.applyNeedEffects({ worldId, actorId, sourceKey: `encounter:${encounterId}`,
+          effects: { social }, nowUtcMs });
+      }
+      if (social > 0 && (outcome.resultCode === 'chat' || outcome.resultCode === 'brief_chat')) {
+        needs.addMoodInfluence({ worldId, actorId, sourceKey: `encounter:${encounterId}`,
+          kind: 'pleasant_chat', intensity: config.town.needs.influence.chatIntensity,
+          nowUtcMs, ttlMs: config.town.needs.influence.chatTtlMs });
+      }
+    } catch (err) {
+      console.warn('[town] encounter need effects failed:', err?.message || err);
+    }
+  }
+  // M3：相遇 → 双向关系增量（熟悉/好感），来源幂等 + 每日上限防刷
+  const socialCfg = config.town.social;
+  const relEffects = {
+    familiarity: socialCfg.familiarityPerOutcome[outcome.resultCode] ?? 0,
+    affection: socialCfg.affectionPerOutcome[outcome.resultCode] ?? 0,
+  };
+  if (relEffects.familiarity > 0 || relEffects.affection > 0) {
+    try {
+      townRelationships().applyMutualEffects({ worldId, actorIds,
+        sourceKey: `encounter:${encounterId}`, effects: relEffects, nowUtcMs });
+    } catch (err) {
+      console.warn('[town] encounter relationship effects failed:', err?.message || err);
+    }
+  }
+  // M5：社交目标进度（熟悉度增长即有效社交）
+  if (relEffects.familiarity > 0 && actorIds.length === 2) {
+    for (const actorId of actorIds) {
+      try {
+        townGoals().applyProgress({ worldId, actorId, sourceKey: `encounter:${encounterId}`,
+          kind: 'social', amount: relEffects.familiarity,
+          nowUtcMs, localDay: Math.floor(nowUtcMs / 86400000) });
+      } catch (err) {
+        console.warn('[town] social goal progress failed:', err?.message || err);
+      }
     }
   }
 }
@@ -995,7 +1751,9 @@ function personaLine(agentKey) {
 
 async function runEncounterDialogue(enc) {
   if (enc.generation !== state.generation || state.encounters.get(enc.id) !== enc) return;
-  if (!config.features.townLLM || !config.features.townAutoLLM) {
+  // 相遇对话是演出：只在聚焦图消耗模型。后台图/关闭自动 LLM 时静默相遇，
+  // 由规则结算收尾（扫描本身已与演出解耦，所有图都会发生相遇）。
+  if (!config.features.townLLM || !config.features.townAutoLLM || !isMapFocused(state.mapId)) {
     enc.endAt = Date.now() + 45_000;
     return;
   }
@@ -1098,6 +1856,11 @@ async function runEncounterDialogue(enc) {
   }
 }
 
+/**
+ * 相遇摘要润色（纯表现）：相遇事实已在收尾时按规则结算（模板摘要 + 经历入账），
+ * 模型只在聚焦图上把已发生的对话润色成更有角色的记忆文本，写入 polished_summary，
+ * 不修改已结算的 summary/outcome_json，也不再触发经历入账。
+ */
 async function runEncounterSummary(enc) {
   if (enc.generation !== state.generation) return;
   if (!config.features.townLLM || !config.features.townAutoLLM || enc.messages.length === 0) return;
@@ -1133,18 +1896,13 @@ async function runEncounterSummary(enc) {
     const parsed = safeJsonParse(content);
     const summary = String(parsed?.summary || '').trim().slice(0, 120);
     if (!summary) return;
-
-    const db = getDb();
-    db.prepare('UPDATE town_encounters SET summary = ? WHERE id = ?').run(summary, enc.id);
-
-    // 相遇入账：townExperienceService 消费后写入双方 town_experiences（角色侧自动写记忆）
-    settleEncounterExperience(enc, summary);
+    getDb().prepare('UPDATE town_encounters SET polished_summary = ? WHERE id = ?').run(summary, enc.id);
   } catch (err) {
     console.warn('[town] encounter summary failed:', err?.message || err);
   }
 }
 
-/** 相遇经历事件服务：只在 townService 侧追加，校验由这里的 validators 承担。 */
+/** 相遇经历事件：只追加不校验内容（校验由 validators 与 townExperienceService 承担）。 */
 let encounterEvents = null;
 function encounterEventService() {
   if (!encounterEvents) {
@@ -1161,21 +1919,72 @@ function encounterEventService() {
   return encounterEvents;
 }
 
-function settleEncounterExperience(enc, summary) {
-  try {
-    const world = state.world;
-    const actorIds = [enc.a, enc.b].map(key => state.meta.get(key)?.actorId).filter(Boolean);
-    if (!world || actorIds.length !== 2) return;
-    encounterEventService().append({
-      eventId: `encounter:${enc.id}`, worldId: world.worldId, worldEpoch: world.epoch,
-      type: 'town.encounter.happened', occurredAt: Date.now(),
-      actorIds, locationKey: enc.location?.key || null,
-      source: { system: 'town.encounters', entityId: `encounter:${enc.id}` },
-      payload: { encounterId: enc.id, summary: String(summary).slice(0, 200) },
-    }, [TOWN_EXPERIENCE_CONSUMER]);
-  } catch (err) {
-    console.warn('[town] encounter experience settlement failed:', err?.message || err);
+/** M1 需求/性格/情绪服务单例（纯同步规则层） */
+let needsRuntime = null;
+function townNeeds() {
+  if (!needsRuntime) needsRuntime = createTownNeedsService({ db: getDb(), needsConfig: config.town.needs });
+  return needsRuntime;
+}
+
+/** M3 有向关系服务单例 */
+let relationshipRuntime = null;
+function townRelationships() {
+  if (!relationshipRuntime) {
+    relationshipRuntime = createTownRelationshipService({ db: getDb(), socialConfig: config.town.social });
   }
+  return relationshipRuntime;
+}
+
+/** M4 基础经营服务单例（账务全部走 economyService 复式账本） */
+let businessRuntime = null;
+function townBusiness() {
+  if (!businessRuntime) {
+    businessRuntime = createTownBusinessService({ db: getDb(), registry: createTownActorRegistry(getDb()),
+      businessConfig: config.town.economy });
+  }
+  return businessRuntime;
+}
+
+/** M5 目标/技能/习惯服务单例 */
+let goalRuntime = null;
+function townGoals() {
+  if (!goalRuntime) {
+    goalRuntime = createTownGoalService({ db: getDb(), goalConfig: config.town.goals });
+  }
+  return goalRuntime;
+}
+
+/** M6 事件导演服务单例 */
+let directorRuntime = null;
+function townDirector() {
+  if (!directorRuntime) {
+    directorRuntime = createTownDirectorService({ db: getDb(), directorConfig: config.town.director });
+  }
+  return directorRuntime;
+}
+
+/**
+ * 相遇经历入账：M0 起以规则结算的结构化结果为来源（interactionType/resultCode/ruleVersion
+ * 随事件携带，消费侧与行上 outcome_json 互相印证）。同一 encounterId 只入账一次；
+ * 必须在结算事务内调用，append 失败会整体回滚。
+ */
+function appendEncounterExperience(enc, summary, outcome, occurredAt) {
+  const world = state.world;
+  const actorIds = [enc.a, enc.b].map(key => state.meta.get(key)?.actorId).filter(Boolean);
+  if (!world || actorIds.length !== 2) return null;
+  const events = encounterEventService();
+  if (events.get(`encounter:${enc.id}`)) return actorIds; // 已结算过：同一来源不重复入账
+  events.append({
+    eventId: `encounter:${enc.id}`, worldId: world.worldId, worldEpoch: world.epoch,
+    type: 'town.encounter.happened', occurredAt,
+    actorIds, locationKey: enc.location?.key || null,
+    source: { system: 'town.encounters', entityId: `encounter:${enc.id}` },
+    payload: {
+      encounterId: enc.id, summary: String(summary).slice(0, 200),
+      interactionType: outcome.interactionType, resultCode: outcome.resultCode, ruleVersion: outcome.ruleVersion,
+    },
+  }, [TOWN_EXPERIENCE_CONSUMER]);
+  return actorIds;
 }
 
 function ambientStoryCountToday(db) {
@@ -1392,10 +2201,11 @@ function persistPlayer() {
 
 // ── tick 主循环 ──
 
-function tick() {
+function tick(nowMs = null) {
   if (!shared.running) return;
-  const now = Date.now();
-  // 逐图驱动：每张图各自走位、上下班、结算；只有聚焦图跑 LLM 演出
+  // 显式 nowMs 供无界面模拟入口（townHeadlessSim）注入虚拟时钟；常规路径走宿主时钟
+  const now = Number.isSafeInteger(nowMs) ? nowMs : Date.now();
+  // 逐图驱动：每张图各自走位、上下班、结算；演出只在聚焦图跑
   for (const rt of [...runtimes.values()]) {
     withRuntime(rt, () => {
       try {
@@ -1418,15 +2228,20 @@ function tickRuntime(rt, now) {
     advanceAgent(agent, now);
   }
   tickTownSimulation();
+  maintainStrollPass(now);
   maintainTownLife();
+  settleMapNeeds(now);
+  maintainBusinessPass(now);
+  maintainGoalPass(now);
+  maintainDirectorPass(now);
   broadcastTownStateUpdated({ reason: 'simulation_tick' });
   advancePlayer(now);
   playerNearbyReactions(now);
-  // 聚焦图才开新相遇、发状态气泡：相遇对话/环境奇遇/气泡都是页面演出，有 LLM 成本。
-  // expireEncounters 保留给所有图，把残留相遇正常收尾（非聚焦图按无 LLM 方式收尾）。
-  if (focused) {
-    scanEncounters(now);
-  }
+  // 相遇扫描是世界逻辑（谁遇见谁、经历如何结算），对所有图运行——后台图与零模型
+  // 同样有相遇并按规则沉淀经历；相遇对话、摘要润色、环境奇遇升级、状态气泡才是
+  // 演出，仍在 runEncounterDialogue/runEncounterSummary/maybeUpgradeToAmbientStory/
+  // maybeStatusBubbles 内按「聚焦图 + 自动 LLM」门控。
+  scanEncounters(now);
   expireEncounters(now);
   if (focused) {
     maybeStatusBubbles(now);
@@ -1449,6 +2264,7 @@ function simSubTick() {
     withRuntime(rt, () => {
       try {
         tickTownSimulation();
+        maintainStrollPass(Date.now());
       } catch (err) {
         console.error(`[town] sim subtick failed (map ${rt.mapId}):`, err?.message || err);
       }
@@ -1549,6 +2365,7 @@ function buildTownState(rt) {
       id: l.id, key: l.key, name: l.name, kind: l.kind, x: l.x, y: l.y, radius: l.radius, ambient: l.ambient,
     })),
     agents,
+    lifeVenues: buildLifeVenueStatus(),
     awayAgents: [...state.agents.values()].filter(a => a.presence === 'off_town')
       .map(a => ({ actorId: a.actorId, agentKey: a.agentKey, activityText: a.activityText })),
     encountersActive: [...state.encounters.values()].map(e => ({ id: e.id, a: e.a, b: e.b, locationId: e.locationId })),
@@ -1568,6 +2385,29 @@ function buildTownState(rt) {
       : null,
     weather,
   };
+}
+
+/**
+ * T11 地图反馈（§8.1）：经营场所的生活供给状态——座位占用（客满）与库存见底
+ * 全部来自服务端事实，前端只做展示，不自行推断。
+ */
+function buildLifeVenueStatus() {
+  if (!state.world || !state.map) return [];
+  const occupancy = lifeVenueOccupancy(state.world);
+  return state.lifeVenues.map(venue => {
+    const loc = state.locations.find(l => l.key === venue.key);
+    const status = { key: venue.key, name: loc?.name || venue.key,
+      offers: venue.offers, business: venue.business };
+    if (venue.business && venue.offers.includes('eat')) {
+      const stock = townBusiness().ensureVenueStock({ worldId: state.world.worldId,
+        worldEpoch: state.world.epoch, mapId: state.mapId, venueKey: venue.key });
+      status.seatsUsed = occupancy[venue.key] ?? 0;
+      status.seatsTotal = config.town.life.capacity.eat;
+      status.stockEmpty = (getDb().prepare('SELECT quantity FROM town_resource_stocks WHERE stock_id = ?')
+        .get(stock.stockId)?.quantity ?? 0) <= 0;
+    }
+    return status;
+  });
 }
 
 function currentActorAction(actorId) {
@@ -1875,6 +2715,19 @@ function applyMembershipChange(agentKey, enabled) {
     }
     const agent = state.agents.get(agentKey);
     if (agent) {
+      // M1：居民加入运行实例时确保模拟档案（确定性派生、可重复；manual 档案不覆盖）
+      const meta = state.meta.get(agentKey);
+      if (agent.actorId && state.world && meta) {
+        try {
+          townNeeds().ensureProfile(state.world.worldId, agent.actorId, {
+            jobText: meta.kind === 'npc'
+              ? getDb().prepare('SELECT job FROM town_npcs WHERE id = ?').get(meta.refId)?.job || ''
+              : '',
+          });
+        } catch (err) {
+          console.warn('[town] profile ensure failed:', err?.message || err);
+        }
+      }
       broadcastTownMove({ charId: agentKey, from: { x: agent.x, y: agent.y }, path: [], speed: agent.speed, startedAt: Date.now() });
     }
   } else if (!enabled && state.agents.has(agentKey)) {
@@ -1963,10 +2816,10 @@ export function listTownCharacters() {
   });
 }
 
-/** 调试用：手动触发一拍 */
-export function forceTick() {
+/** 调试用：手动触发一拍（可注入虚拟时钟时刻，供无界面模拟/诊断复现用） */
+export function forceTick(nowMs = null) {
   if (!shared.running) return { ok: false, error: 'town scheduler not running' };
-  tick();
+  tick(nowMs);
   return { ok: true };
 }
 

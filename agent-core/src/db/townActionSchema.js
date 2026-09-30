@@ -16,9 +16,15 @@ export function migrateTownActionSchema(db) {
       ON town_actions(world_id, world_epoch, actor_id, rule_key, type);
     CREATE INDEX IF NOT EXISTS town_actions_actor_current ON town_actions(world_id, world_epoch, actor_id, updated_at DESC)
       WHERE status IN ('validated','reserved','running');
+    -- 生活占用聚合的专用部分索引：谓词必须与 townService.lifeVenueOccupancy 的查询逐字一致
+    -- （type 用 IN 列表而非 LIKE，查询计划器才能采用），否则在百万行意图日志上每次全前缀扫描
+    CREATE INDEX IF NOT EXISTS town_actions_life_active
+      ON town_actions(world_id, world_epoch, target)
+      WHERE type IN ('life_eat','life_read','life_sit')
+        AND status IN ('reserved','running') AND target IS NOT NULL;
     CREATE TABLE IF NOT EXISTS town_action_requests (
       world_id TEXT NOT NULL, world_epoch INTEGER NOT NULL, request_key TEXT NOT NULL,
-      payload TEXT NOT NULL, response TEXT NOT NULL,
+      payload TEXT NOT NULL, response TEXT NOT NULL, created_at INTEGER,
       PRIMARY KEY(world_id, world_epoch, request_key)
     );
     CREATE TABLE IF NOT EXISTS town_resource_claims (
@@ -48,5 +54,16 @@ export function migrateTownActionSchema(db) {
       occurred_at INTEGER NOT NULL, result TEXT
     );
     CREATE INDEX IF NOT EXISTS town_activity_actor_time ON town_activity_log(actor_id, occurred_at);
+    -- FK 检查路径：删 town_actions 父行时 SQLite 逐行检查 town_activity_log 子表，
+    -- 没有这个索引就是每行一次百万级全表扫描（activity_log 与 actions 同量级增长）
+    CREATE INDEX IF NOT EXISTS town_activity_log_action ON town_activity_log(action_id);
   `))();
+  // 旧库补列：幂等记录需要时间戳才能按保留期清理（旧行 created_at 为 NULL，由 epoch 轮换代删；
+  // 该表每 5s 子拍为在飞动作写一条 advance 记录，日增可达数十万行，是库里最大的无界增长源）
+  const reqCols = db.prepare('PRAGMA table_info(town_action_requests)').all();
+  if (reqCols.length && !reqCols.find(c => c.name === 'created_at')) {
+    db.exec('ALTER TABLE town_action_requests ADD COLUMN created_at INTEGER DEFAULT NULL');
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS town_action_requests_created
+    ON town_action_requests(created_at) WHERE created_at IS NOT NULL`);
 }

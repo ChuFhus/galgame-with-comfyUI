@@ -55,15 +55,53 @@ export function createTownSimulation({ db, clock, registry, readActorFacts, move
   const ensure = () => { if (!initialized) { migrateTownSimulationSchema(db); initialized = true; } };
   const engine = createTownRuleEngine({
     refs: { 'schedule.intent': { type: 'string', values: ['work', 'rest', 'wait', 'off_town'] },
-      'schedule.allowed': { type: 'boolean' } },
-    actions: { work_shift: {}, rest: {}, wait: {} },
+      'schedule.allowed': { type: 'boolean' },
+      // 空闲等待承诺闸门：只有被日程/岗位/避雨/生活计划锚定的 wait 才允许产生动作行；
+      // 纯游走的未承诺空闲（缺省/false）按三值逻辑拒绝 wait 规则——自然走动是纯演出，
+      // 不产生 town_actions 行（游走由宿主演出层直接驱动）
+      'idle.committed': { type: 'boolean' },
+      // M2 生活动作事实：需求快照（0-100）与宿主决策的生活计划（缺省 = 交给 wait）
+      'needs.satiety': { type: 'number', min: 0, max: 100 }, 'needs.energy': { type: 'number', min: 0, max: 100 },
+      'needs.social': { type: 'number', min: 0, max: 100 }, 'needs.fun': { type: 'number', min: 0, max: 100 },
+      'needs.comfort': { type: 'number', min: 0, max: 100 }, 'needs.security': { type: 'number', min: 0, max: 100 },
+      'life.action': { type: 'string', values: ['', 'eat', 'read', 'sit'] },
+      'life.target': { type: 'string' } },
+    actions: { work_shift: {}, rest: {}, wait: {}, life_eat: {}, life_read: {}, life_sit: {} },
   });
-  const rules = [['work', 'work_shift', 50], ['rest', 'rest', 60], ['wait', 'wait', 10]].map(([intent, type, priority]) =>
+  const lifeWhen = action => ({ op: 'eq', args: [{ ref: 'life.action' }, action] });
+  const routineWhen = intent => ({ op: 'all', args: [{ ref: 'schedule.allowed' },
+    { op: 'eq', args: [{ ref: 'schedule.intent' }, intent] }] });
+  const rules = [['work', 'work_shift', 50], ['rest', 'rest', 60]].map(([intent, type, priority]) =>
     engine.compileRule({ key: `town.routine.${intent}`, version: TOWN_SIMULATION_RULE_VERSION,
       trigger: ['simulation.tick'], priority, cooldownSeconds,
-      when: { op: 'all', args: [{ ref: 'schedule.allowed' },
-        { op: 'eq', args: [{ ref: 'schedule.intent' }, intent] }] },
-      score: 80, action: { type } }));
+      when: routineWhen(intent), score: 80, action: { type } }));
+  // wait 只承认「有承诺的等待」（日程钉点/避雨等，idle.committed=true）；未承诺的空闲
+  // 不产生动作行——否则每次决策重算都会 SCHEDULE_CHANGED 取消重建，把意图日志灌爆
+  rules.push(engine.compileRule({ key: 'town.routine.wait', version: TOWN_SIMULATION_RULE_VERSION,
+    trigger: ['simulation.tick'], priority: 10, cooldownSeconds,
+    when: { op: 'all', args: [routineWhen('wait'), { op: 'eq', args: [{ ref: 'idle.committed' }, true] }] },
+    score: 80, action: { type: 'wait' } }));
+  // M2 生活规则：优先级 40（介于作息 50/60 与 wait 10 之间）——空闲时压过 wait，
+  // 不会被常规作息压制；饥饿 urgency 用分段线性阈值表达（低饱食提升吃饭收益）
+  rules.push(
+    engine.compileRule({ key: 'town.life.eat.urgent', version: TOWN_SIMULATION_RULE_VERSION,
+      trigger: ['simulation.tick'], priority: 40, cooldownSeconds,
+      when: { op: 'all', args: [{ ref: 'schedule.allowed' }, lifeWhen('eat'),
+        { op: 'lt', args: [{ ref: 'needs.satiety' }, 30] }] },
+      score: 90, action: { type: 'life_eat' } }),
+    engine.compileRule({ key: 'town.life.eat', version: TOWN_SIMULATION_RULE_VERSION,
+      trigger: ['simulation.tick'], priority: 40, cooldownSeconds,
+      when: { op: 'all', args: [{ ref: 'schedule.allowed' }, lifeWhen('eat')] },
+      score: 60, action: { type: 'life_eat' } }),
+    engine.compileRule({ key: 'town.life.read', version: TOWN_SIMULATION_RULE_VERSION,
+      trigger: ['simulation.tick'], priority: 40, cooldownSeconds,
+      when: { op: 'all', args: [{ ref: 'schedule.allowed' }, lifeWhen('read')] },
+      score: 45, action: { type: 'life_read' } }),
+    engine.compileRule({ key: 'town.life.sit', version: TOWN_SIMULATION_RULE_VERSION,
+      trigger: ['simulation.tick'], priority: 40, cooldownSeconds,
+      when: { op: 'all', args: [{ ref: 'schedule.allowed' }, lifeWhen('sit')] },
+      score: 35, action: { type: 'life_sit' } }),
+  );
   const runner = createTownActionRunner({ db, clock: { now: () => executionNow ?? assertUtcMs(clock.now()) },
     getWorldEpoch: worldId => registry.getWorldEpoch(worldId),
     getActor: (actorId, worldId) => registry.getActor(actorId, worldId),
@@ -97,10 +135,19 @@ export function createTownSimulation({ db, clock, registry, readActorFacts, move
     if (value.shelterForecastAt !== undefined && (!Number.isSafeInteger(value.shelterForecastAt)
         || value.shelterForecastAt < 0 || value.intent !== 'wait' || !text(value.target)
         || value.durationMs > SHELTER_WAIT_MS || value.minDurationMs !== 0)) throw error('INVALID_SIMULATION_FACTS');
+    // M2 可选生活事实：类型与取值域校验（缺省 = 缺席事实，规则按三值逻辑拒绝）
+    for (const key of ['needsSatiety', 'needsEnergy', 'needsSocial', 'needsFun', 'needsComfort', 'needsSecurity']) {
+      const v = value[key];
+      if (v !== undefined && (!Number.isFinite(v) || v < 0 || v > 100)) throw error('INVALID_SIMULATION_FACTS');
+    }
+    if (value.lifeAction !== undefined && !['', 'eat', 'read', 'sit'].includes(value.lifeAction)) throw error('INVALID_SIMULATION_FACTS');
+    if (value.lifeTarget !== undefined && value.lifeTarget !== null && !text(value.lifeTarget)) throw error('INVALID_SIMULATION_FACTS');
+    if (value.idleCommitted !== undefined && typeof value.idleCommitted !== 'boolean') throw error('INVALID_SIMULATION_FACTS');
     // Copy primitives only: later adapter mutations cannot alter this decision batch.
     return Object.freeze(Object.fromEntries(['actorId', 'worldEpoch', 'intent', 'scheduleKey', 'target',
       'targetExists', 'arrived', 'locationKey', 'allowsAction', 'durationMs', 'minDurationMs',
-      'shelterForecastAt'].map(k => [k, value[k]])));
+      'shelterForecastAt', 'needsSatiety', 'needsEnergy', 'needsSocial', 'needsFun', 'needsComfort',
+      'needsSecurity', 'lifeAction', 'lifeTarget', 'idleCommitted'].map(k => [k, value[k]])));
   }
   function backoff(state) {
     state.failures = Math.min(30, state.failures + 1);
@@ -205,7 +252,12 @@ export function createTownSimulation({ db, clock, registry, readActorFacts, move
           }
           if (action) return finish('active');
           if (executionNow < state.nextAttemptAt) return finish('backoff');
-          const batch = createFactSnapshot(engine.registry, { 'schedule.intent': f.intent, 'schedule.allowed': f.allowsAction });
+          const batch = createFactSnapshot(engine.registry, {
+            'schedule.intent': f.intent, 'schedule.allowed': f.allowsAction,
+            'needs.satiety': f.needsSatiety, 'needs.energy': f.needsEnergy, 'needs.social': f.needsSocial,
+            'needs.fun': f.needsFun, 'needs.comfort': f.needsComfort, 'needs.security': f.needsSecurity,
+            'life.action': f.lifeAction, 'life.target': f.lifeTarget ?? null,
+            'idle.committed': f.idleCommitted });
           const decision = selectTownCandidate({ rules, facts: batch, worldId: world.worldId, actorId,
             decisionSequence: state.decisionSequence, nowUtcMs: executionNow,
             cooldowns: new Map(Object.entries(state.cooldowns)), targetKey: f.target ?? '' });

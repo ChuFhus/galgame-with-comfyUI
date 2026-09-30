@@ -10,6 +10,28 @@ import { stripMomentImageRequest } from './momentImageRequest.js';
 export const USER_MOMENT_CONTEXT_DAYS = 2;
 export const GROUP_USER_MOMENT_CONTEXT_DAYS = 1;
 
+/**
+ * 读取某条朋友圈下的评论区，格式化为可注入的文本行（没有评论时返回空数组）。
+ * @param {import('better-sqlite3').Database} db
+ * @param {number} postId 朋友圈帖子 id
+ * @param {string} [userName] 用户显示名，用于 author_type === 'user' 的评论作者
+ * @returns {string[]}
+ */
+export function buildMomentCommentLines(db, postId, userName = '用户') {
+  const comments = db.prepare(
+    `SELECT mc.author_type, mc.content,
+       CASE WHEN mc.author_type = 'character' THEN c.display_name ELSE ? END AS display_name
+     FROM moment_comments mc
+     LEFT JOIN characters c ON c.id = mc.author_id AND mc.author_type = 'character'
+     WHERE mc.post_id = ?
+     ORDER BY mc.created_at ASC, mc.id ASC`
+  ).all(userName, postId);
+  return comments.map((comment) => {
+    const name = comment.author_type === 'character' ? comment.display_name : userName;
+    return `  ${name}: ${comment.content}`;
+  });
+}
+
 function formatUserMomentLine(index, moment, comments, characterName, userName) {
   const content = stripMomentImageRequest(moment.content);
   const prompt = moment.prompt?.trim() || '';
@@ -104,7 +126,7 @@ export function buildPrivateMomentContext(db, {
 }
 
 /**
- * 群聊共用的用户朋友圈：任一群成员评论过才可见，只保留正文，不注入评论区。
+ * 群聊共用的用户朋友圈：任一群成员评论过才可见，正文与评论区一并注入。
  * @param {import('better-sqlite3').Database} db
  */
 export function buildGroupUserMomentContext(db, {
@@ -131,7 +153,12 @@ export function buildGroupUserMomentContext(db, {
   `).all(userMomentDays, ...memberIds, userLimit);
   const lines = posts.map((post) => {
     const content = stripMomentImageRequest(post.content) || '（图片动态）';
-    return `「${userName}」发了朋友圈：「${content.slice(0, 100)}」`;
+    let line = `【${userName}】发了朋友圈：「${content.slice(0, 100)}」`;
+    const commentLines = buildMomentCommentLines(db, post.id, userName);
+    if (commentLines.length > 0) {
+      line += `\n  评论区：\n${commentLines.join('\n')}`;
+    }
+    return line;
   });
   return { posts, lines };
 }

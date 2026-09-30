@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { canonicalJson, createTownEventService, requireText, townError } from './townEventService.js';
 
 const terminal = new Set(['completed', 'cancelled', 'failed']);
-const types = new Set(['move_to', 'wait', 'rest', 'work_shift']);
+// life_*：M2 生活动作（进食/阅读/落座），与 rest 同构——在目标点计时完成，
+// 不产生工资/物品；结算效果由宿主按 type 在完成时写入需求层。
+const types = new Set(['move_to', 'wait', 'rest', 'work_shift', 'life_eat', 'life_read', 'life_sit']);
 /** Bookkeeping-only transitions: no resident-visible change, kept out of events and the activity feed. */
 export const QUIET_ACTIVITY_REASONS = new Set(['VALIDATED', 'RESERVE', 'RECOVER']);
 const decode = row => row && ({ id: row.id, worldId: row.world_id, worldEpoch: row.world_epoch,
@@ -78,8 +80,9 @@ export function createTownActionRunner({ db, clock, getWorldEpoch, getActor, rea
         return JSON.parse(previous.response);
       }
       const result = fn();
-      db.prepare('INSERT INTO town_action_requests VALUES(?,?,?,?,?)')
-        .run(input.worldId,input.worldEpoch,input.idempotencyKey,serialized,canonicalJson(result));
+      db.prepare(`INSERT INTO town_action_requests(world_id,world_epoch,request_key,payload,response,created_at)
+        VALUES(?,?,?,?,?,?)`)
+        .run(input.worldId,input.worldEpoch,input.idempotencyKey,serialized,canonicalJson(result),clock.now());
       return result;
     })();
   }

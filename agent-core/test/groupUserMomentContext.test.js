@@ -6,7 +6,7 @@ process.env.DB_PATH = ':memory:';
 const { getDb, closeDb } = await import('../src/db/index.js');
 const { buildGroupUserMomentContext } = await import('../src/services/privateMomentContext.js');
 
-test('群聊用户朋友圈按群成员评论和一天窗口注入，且不包含评论区', async t => {
+test('群聊用户朋友圈按群成员评论和一天窗口注入，并注入评论区', async t => {
   t.after(() => closeDb());
   const db = getDb();
 
@@ -59,8 +59,10 @@ test('群聊用户朋友圈按群成员评论和一天窗口注入，且不包�
 
   assert.equal(context.posts.length, 1);
   assert.equal(context.posts[0].content, '群聊里的新鲜动态');
-  assert.deepEqual(context.lines, ['「测试员」发了朋友圈：「群聊里的新鲜动态」']);
-  assert.ok(!context.lines.join('\n').includes('群员评论'));
+  assert.deepEqual(context.lines, [
+    '【测试员】发了朋友圈：「群聊里的新鲜动态」\n  评论区：\n  群员一: 群员评论',
+  ]);
+  assert.ok(context.lines.join('\n').includes('群员一: 群员评论'));
   assert.ok(!context.lines.join('\n').includes('超过一天的动态'));
   assert.ok(!context.lines.join('\n').includes('较旧的群聊动态'));
   assert.ok(!context.lines.join('\n').includes('只有群外角色评论的动态'));

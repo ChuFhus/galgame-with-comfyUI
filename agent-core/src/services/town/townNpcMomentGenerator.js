@@ -30,7 +30,7 @@ function toSQLite(iso) {
 export function collectTownNpcDayFacts(db, npc) {
   const encodedId = -npc.id; // town_encounters.char_a/char_b：NPC 取负、角色取正
   const encounters = db.prepare(`
-    SELECT e.id, e.summary, l.name AS location_name
+    SELECT e.id, COALESCE(NULLIF(e.polished_summary, ''), e.summary) AS summary, l.name AS location_name
     FROM town_encounters e LEFT JOIN town_locations l ON l.id = e.location_id
     WHERE e.status = 'done' AND e.summary != ''
       AND (e.char_a = ? OR e.char_b = ?)

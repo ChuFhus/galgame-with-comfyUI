@@ -18,6 +18,7 @@ import { loadEmotionState, stateToPrompt, loadAffinity, affinityToPrompt, cropPe
 import { MOMENT_COMMENT_RULES, firstMomentImagePrompt } from './momentForms.js';
 import { extractMomentImageRequest, stripMomentImageRequest } from './momentImageRequest.js';
 import { userNickname, loadCommentHistory, isCharacterSleeping } from './momentUserPostService.js';
+import { recallMomentMemories, formatMomentMemories } from './momentMemoryRecall.js';
 
 /** 单条用户评论最多触发几个角色回复（@ 多人时截断，防止 LLM 调用失控） */
 const MAX_REPLIERS_PER_COMMENT = 4;
@@ -239,6 +240,19 @@ ${MOMENT_COMMENT_RULES}
   if (relContext) msgs.push({ role: 'system', content: relContext });
 
   msgs.push({ role: 'system', content: contextTask });
+
+  // RAG 记忆注入：检索发帖人（A）的记忆，让即将回评的角色（B）知道 A 经历过什么。
+  // 角色发的朋友圈取帖主本人的记忆；用户 / NPC 发的朋友圈取评论者视角下关于帖主的记忆。
+  const memoryOwnerName = isUserPost ? userName : (post.display_name || 'TA');
+  const memoryScope = post.character_id != null ? [`char-${post.character_id}`] : [`char-${character.id}`];
+  const momentMemories = await recallMomentMemories(memoryScope, {
+    postText: visibleContent,
+    commentText: [...latestCommentLines, commentHistory],
+  }, opts.deps || {});
+  if (momentMemories.length) {
+    msgs.push({ role: 'system', content: formatMomentMemories(momentMemories, memoryOwnerName) });
+  }
+
 
   // 用户帖 AI 配图的防误认提醒放末位 user 消息（末位指令权重最高）
   const replyImageNote = isUserPost && imageRequest

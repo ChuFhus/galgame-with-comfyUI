@@ -25,6 +25,33 @@
       @dblclick="onDblClick"
     ></canvas>
 
+    <!-- 居民动态浮窗（左上角）：最新一条 NPC 活动记录，0.3s 渐入渐出；点开看全镇流水 -->
+    <Transition name="ticker-fade" mode="out-in">
+      <div
+v-if="latestActivity && initialized" :key="latestActivity.seq" class="town-activity-ticker" role="button" tabindex="0"
+        :aria-label="`居民动态：${latestActivity.name}${latestActivity.text}，点开查看全部`"
+        @click="activityPanelOpen = true" @keydown.enter="activityPanelOpen = true"
+>
+        <span class="tat-name">{{ latestActivity.name }}</span>
+        <span class="tat-text">{{ latestActivity.text }}</span>
+      </div>
+    </Transition>
+    <LinsheModal v-model="activityPanelOpen" title="居民动态">
+      <div class="town-activity-panel">
+        <div class="tap-toolbar">
+          <span class="tap-hint">最近 40 条全镇行动记录</span>
+          <linshe-button variant="link" size="sm" :disabled="activityFeedLoading" @click="refreshActivityFeed">{{ activityFeedLoading ? '刷新中…' : '刷新' }}</linshe-button>
+        </div>
+        <p v-if="!activityFeed.length && !activityFeedLoading" class="tap-empty">还没什么动静，居民们大概在忙自己的事。</p>
+        <ul v-else class="tap-list">
+          <li v-for="item in activityFeed" :key="item.seq">
+            <time>{{ formatActivityTime(item.occurredAt) }}</time>
+            <span class="tap-name">{{ item.name }}</span>
+            <span class="tap-text">{{ item.text }}</span>
+          </li>
+        </ul>
+      </div>
+    </LinsheModal>
     <!-- 顶栏 -->
     <div class="town-topbar">
       <div class="town-title-row">
@@ -182,6 +209,8 @@ v-if="!hdActive" variant="ghost" size="sm"
 v-if="chatCharacterId != null" :key="`char:${chatCharacterId}`"
           :character-id="chatCharacterId" :town-context="dialogueContext" @context-invalid="refreshDialogueWorld" :display-name="chatResident?.displayName"
           :standing-url="chatResident?.standingUrl" :avatar-url="chatResident?.avatarPath"
+          :status-line="dialogueStatusLine" :activity="residentActivityMerged" :activity-loading="residentActivity.loading" :activity-loaded="residentActivity.loaded"
+          @fetch-activity="fetchResidentActivity" @open-status="openResidentStatus"
           :player-name="player?.displayName || '我'" @close="closeDialogue"
           @story="openResidentStory"
 />
@@ -191,12 +220,16 @@ v-else-if="chatNpcId != null"
           :npc-id="chatNpcId" :world-id="dialogueContext?.worldId" :world-epoch="dialogueContext?.worldEpoch"
           :player-name="player?.displayName || '我'"
           :display-name="chatNpcName"
+          :status-line="dialogueStatusLine" :activity="residentActivityMerged" :activity-loading="residentActivity.loading" :activity-loaded="residentActivity.loaded"
+          @fetch-activity="fetchResidentActivity" @open-status="openResidentStatus"
           @close="closeDialogue" @story="openResidentStory"
           @character-chat="openLinkedCharacterChat" @context-invalid="refreshDialogueWorld"
         />
       </div>
     </Transition>
     <p v-if="dialogueOpening || dialogueError || lifeMoveError || travelNotice" class="town-dialogue-notice" role="status">{{ travelNotice || lifeMoveError || dialogueError || '正在停下脚步…' }}</p>
+    <TownResidentStatusModal v-model="residentStatusOpen" :name="chatResident?.displayName || chatNpcName"
+      :status="residentStatus.data" :loading="residentStatus.loading" @refresh="fetchResidentStatus" />
     <TownWalletPanel :open="showWalletPanel" @close="closeWalletPanel" />
     <TownPaperPanel v-if="spotReady && worldSpot" :open="true" :title="worldSpot.displayName" @close="closeWorldSpot">
       <p>选择这里的功能。服务可展开特殊奇遇，交易可查看商品并买卖。</p>
@@ -310,11 +343,13 @@ import { playTownBgm, pauseTownBgm, setTownBgmMuted } from '../utils/townBgm.js'
 import { formatTownTemperature } from '../utils/townWeather.js'
 import * as api from '../api/index.js'
 import LinsheButton from '../components/ui/LinsheButton.vue'
+import LinsheModal from '../components/ui/LinsheModal.vue'
 import LinsheSwitch from '../components/ui/LinsheSwitch.vue'
 import { createCanvasTownRenderer } from '../town/renderers/CanvasTownRenderer.js'
 import { HW, HH, cellTopWorld, cellCenterWorld, worldToCell, objectRect, buildBlockedCells } from '../town/renderers/projection.js'
 import { canvasGroundImage } from '../town/renderers/groundTexture.js'
 import { adaptAgent, assetUrl } from '../town/renderers/TownSceneAdapter.js'
+import { mergeActivityWithTrail } from '../town/wanderTrail.js'
 import LinsheInput from '../components/ui/LinsheInput.vue'
 import LinsheSelect from '../components/ui/LinsheSelect.vue'
 import { TOWN_FOOTPRINT_OPTIONS, parseTownFootprint } from '../utils/townFootprint.js'
@@ -325,6 +360,7 @@ import TownCharacterChat from '../components/town/TownCharacterChat.vue'
 import TownWalletPanel from '../components/town/TownWalletPanel.vue'
 import TownPaperPanel from '../components/town/TownPaperPanel.vue'
 import TownResidentActions from '../components/town/TownResidentActions.vue'
+import TownResidentStatusModal from '../components/town/TownResidentStatusModal.vue'
 import TownCapabilityPicker from '../components/town/TownCapabilityPicker.vue'
 import TownAdminPanel from '../components/town/TownAdminPanel.vue'
 import TownServiceManagerHost from '../components/town/TownServiceManagerHost.vue'
@@ -333,7 +369,7 @@ import TownTravelOverlay from '../components/town/TownTravelOverlay.vue'
 
 const router = useRouter(), route = useRoute()
 const town = useTownStore()
-const { map: mapMeta, locations, agents, player, weather, loaded, connected, initialized, renderMap } = storeToRefs(town)
+const { map: mapMeta, locations, agents, player, weather, loaded, connected, initialized, renderMap, lifeVenues } = storeToRefs(town)
 
 // ── BGM：进入世界页续播、离开暂停（断点存内存），静音状态同步 system_settings ──
 const settingsStore = useSettingsStore()
@@ -475,6 +511,82 @@ const chatResident = ref(null)
 const dialogueContext = ref(null)
 const dialogueOpening = ref(false)
 const dialogueError = ref('')
+
+// ── 居民动态：对话框内的当前状态 / 行动记录，世界页左上角信息流 ──
+// 当前状态直接取地图快照里的 activityText（服务端权威、随快照刷新）
+const dialogueStatusLine = computed(() => {
+  const resident = chatResident.value
+  if (!resident) return ''
+  const live = town.agents.find(a => a.agentKey === resident.agentKey)
+  return live?.activityText || resident.activityText || '在镇上生活'
+})
+// 对话框「动态」页签：单个居民最近 100 条行动记录（按 actorId 缓存，换人即作废）
+const residentActivity = ref({ actorId: '', entries: [], loading: false, loaded: false })
+async function fetchResidentActivity() {
+  const actorId = chatResident.value?.actorId
+  if (!actorId) return
+  const previous = residentActivity.value
+  const keepEntries = previous.actorId === actorId ? previous.entries : []
+  residentActivity.value = { actorId, entries: keepEntries, loading: true, loaded: previous.actorId === actorId && previous.loaded }
+  try {
+    const data = await api.fetchTownActorActivity(actorId, 100)
+    if (chatResident.value?.actorId === actorId) {
+      residentActivity.value = { actorId, entries: data?.entries || [], loading: false, loaded: true }
+    }
+  } catch {
+    if (chatResident.value?.actorId === actorId) {
+      residentActivity.value = { actorId, entries: keepEntries, loading: false, loaded: false }
+    }
+  }
+}
+// 居民状态弹窗（独立窗口，不挤占对话框）：需求/心情/目标/技能/最近来往，按 actorId 缓存
+const residentStatus = ref({ actorId: '', data: null, loading: false, loaded: false })
+const residentStatusOpen = ref(false)
+function openResidentStatus() {
+  if (!chatResident.value?.actorId) return
+  residentStatusOpen.value = true
+  if (!residentStatus.value.loaded || residentStatus.value.actorId !== chatResident.value.actorId) fetchResidentStatus()
+}
+async function fetchResidentStatus() {
+  const actorId = chatResident.value?.actorId
+  if (!actorId) return
+  const previous = residentStatus.value
+  const keep = previous.actorId === actorId ? previous.data : null
+  residentStatus.value = { actorId, data: keep, loading: true, loaded: previous.actorId === actorId && previous.loaded }
+  try {
+    const data = await api.fetchTownActorStatus(actorId)
+    if (chatResident.value?.actorId === actorId) residentStatus.value = { actorId, data, loading: false, loaded: true }
+  } catch {
+    if (chatResident.value?.actorId === actorId) residentStatus.value = { actorId, data: keep, loading: false, loaded: false }
+  }
+}
+// 「动态」页签 = 后端行动记录 + 前端合成足迹（足迹只在内存，不进存档；见 wanderTrail.js）
+const residentActivityMerged = computed(() => mergeActivityWithTrail(
+  residentActivity.value.entries,
+  town.wanderTrails?.[chatResident.value?.actorId] || [],
+))
+// 左上角浮窗与面板共用一份全镇信息流（60s 节奏，和快照刷新同频）
+const activityFeed = ref([])
+const activityFeedLoading = ref(false)
+const activityPanelOpen = ref(false)
+const latestActivity = computed(() => activityFeed.value[0] || null)
+async function refreshActivityFeed() {
+  if (activityFeedLoading.value) return
+  activityFeedLoading.value = true
+  try {
+    const data = await api.fetchTownActivity(40)
+    activityFeed.value = data?.entries || []
+  } catch { /* 信息流拉取失败不打扰地图 */ }
+  finally { activityFeedLoading.value = false }
+}
+const refreshActivityTimer = setInterval(() => { if (!disposed) refreshActivityFeed() }, 60_000)
+function formatActivityTime(occurredAt) {
+  const date = new Date(occurredAt)
+  if (!Number.isFinite(date.getTime())) return ''
+  const now = new Date()
+  const hhmm = date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  return date.toDateString() === now.toDateString() ? hhmm : `${date.getMonth() + 1}月${date.getDate()}日 ${hhmm}`
+}
 const showWalletPanel = ref(false)
 // 世界里点开的建筑互动面板：{ displayName, locationKey }
 const worldSpot = ref(null)
@@ -1437,6 +1549,82 @@ function drawWeatherOverlay(c, nowMs) {
   }
 }
 
+// ── 场所状态徽标（T11 §8.1）：座位占用/客满/缺货全部来自服务端 lifeVenues 事实 ──
+// 画布语言与 drawBubble/drawNameTag 同源（暖纸底 + 墨色文字的「质感岛」，不随主题换肤）；
+// 语义状态色不随主题（设计系统约定）。状态切换用 0.3s 渐入，避免生硬跳变。
+const venueBadgeMeta = new Map()   // key -> { status, since }
+const VENUE_STATUS_TEXT = { open: '营业中', full: '客满', stockout: '缺货' }
+const VENUE_STATUS_COLOR = { open: '#3f7d54', full: '#b07d2b', stockout: '#b5484d' }
+
+function venueBadgeStatus(venue) {
+  if (venue.business && venue.offers?.includes('eat')) {
+    if (venue.stockEmpty) return 'stockout'
+    if (Number.isFinite(venue.seatsUsed) && Number.isFinite(venue.seatsTotal)
+      && venue.seatsTotal > 0 && venue.seatsUsed >= venue.seatsTotal) return 'full'
+  }
+  return 'open'
+}
+
+function drawVenueBadges(ctx, nowMs) {
+  if (editing.value || !lifeVenues.value?.length) return
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false
+  const seen = new Set()
+  for (const venue of lifeVenues.value) {
+    if (!venue?.business || !venue.key) continue
+    const loc = (locations.value || []).find(l => l.key === venue.key)
+    if (!loc || !Number.isInteger(loc.x) || !Number.isInteger(loc.y)) continue
+    const status = venueBadgeStatus(venue)
+    seen.add(venue.key)
+    const meta = venueBadgeMeta.get(venue.key)
+    if (!meta || meta.status !== status) venueBadgeMeta.set(venue.key, { status, since: nowMs })
+    const alpha = reducedMotion ? 1 : Math.min(1, (nowMs - venueBadgeMeta.get(venue.key).since) / 300)
+    const center = cellCenterWorld(loc.x, loc.y)
+    const px = center.x
+    const py = center.y - HH * 2.35
+
+    const name = venue.name || venue.key
+    const eats = venue.offers?.includes('eat')
+    const statusText = VENUE_STATUS_TEXT[status]
+    const detail = status === 'open' && eats && Number.isFinite(venue.seatsUsed)
+      ? `座位 ${venue.seatsUsed}/${venue.seatsTotal ?? '?'}`
+      : statusText
+    const label = `${name} · ${detail}`
+    ctx.save()
+    ctx.globalAlpha = alpha
+    ctx.font = '10px "HarmonyOS Sans SC", sans-serif'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    const w = ctx.measureText(label).width + 14
+    const h = 16
+    const bx = px - w / 2
+    const by = py - h / 2
+    // 暖纸胶囊：亮底 + 墨色细描边（与居民名牌同一画布语言）
+    ctx.beginPath()
+    const r = 8
+    ctx.moveTo(bx + r, by)
+    ctx.arcTo(bx + w, by, bx + w, by + h, r)
+    ctx.arcTo(bx + w, by + h, bx, by + h, r)
+    ctx.arcTo(bx, by + h, bx, by, r)
+    ctx.arcTo(bx, by, bx + w, by, r)
+    ctx.closePath()
+    ctx.fillStyle = 'rgba(255,253,248,0.94)'
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(90,70,50,0.55)'
+    ctx.lineWidth = 1
+    ctx.stroke()
+    // 名字墨色，状态词用语义色
+    const namePart = `${name} · `
+    ctx.fillStyle = '#4a3a2c'
+    ctx.fillText(namePart, px - (w - 14) / 2 + ctx.measureText(namePart).width / 2, py + 0.5)
+    ctx.fillStyle = VENUE_STATUS_COLOR[status]
+    ctx.fillText(detail, px + w / 2 - 7 - ctx.measureText(detail).width / 2, py + 0.5)
+    ctx.restore()
+  }
+  for (const key of [...venueBadgeMeta.keys()]) {
+    if (!seen.has(key)) venueBadgeMeta.delete(key)
+  }
+}
+
 function draw(nowMs) {
   rafId = 0
   if (!ctx || disposed) return
@@ -1481,6 +1669,7 @@ function draw(nowMs) {
     ctx.translate(cssW / 2, cssH / 2); ctx.scale(cam.zoom, cam.zoom); ctx.translate(-cam.x, -cam.y)
     ctx.imageSmoothingEnabled = false
     canvasRenderer.draw(ctx, frames, nowMs, { labelsOnly: true, hover: hoverAgentKey.value })
+    drawVenueBadges(ctx, nowMs)
     if (editing.value) drawEditorOverlays(ctx)
     ctx.restore()
   } else {
@@ -1639,6 +1828,7 @@ watch(townAssets, () => { staticDirty = true }, { deep: true })
 
 onMounted(async () => {
   ctx = canvasEl.value.getContext('2d')
+  refreshActivityFeed()
   if (!settingsStore.bgmMuted) playTownBgm()
   // 出行过场与面板读一次系统的「减少动态」偏好，之后跟着系统变
   if (typeof window.matchMedia === 'function') {
@@ -1663,6 +1853,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   disposed = true; rendererEpoch++
+  clearInterval(refreshActivityTimer)
   // 过场中途离开页面：让挂起的等待立刻收尾（异步流程本来就靠 token 作废）
   ++travelRun
   clearTravelNotice()
@@ -1688,6 +1879,7 @@ onBeforeUnmount(() => {
   stopDialogueHoldTimer()
   releaseDialogueResident(chatResident.value)
   chatResident.value = null
+  residentStatusOpen.value = false
   town.stopTownStream()
 })
 
@@ -1708,6 +1900,11 @@ async function openDialogue(resident) {
     await holdDialogueResident(resident)
     dialogueContext.value = { worldId: town.snapshot?.worldId, worldEpoch: town.snapshot?.worldEpoch, actorId: resident.actorId }
     chatResident.value = resident
+    // 换人即作废上一位的缓存数据，避免新对话框首帧显示成别人的状态/动态
+    residentActivity.value = { actorId: resident.actorId, entries: [], loading: false, loaded: false }
+    residentStatus.value = { actorId: resident.actorId, data: null, loading: false, loaded: false }
+    // 打开对话即预取行动记录：足迹是前端合成的，不能让「动态」页签因为已有足迹而跳过拉取
+    fetchResidentActivity()
     chatCharacterId.value = resident.characterId || null
     chatNpcId.value = resident.characterId ? null : resident.npcId
     chatNpcName.value = resident.displayName || '邻居'
@@ -2099,6 +2296,57 @@ async function startTravel() {
 /* 过场期间画布彻底交出去：不接指针、不给悬停光标（输入闸门在 dialogueInputBlocked） */
 .town-canvas.is-traveling { pointer-events: none; cursor: default; }
 
+/* ── 居民动态浮窗（左上角）：与顶栏同款暖纸质感岛，状态更新 0.3s 渐入渐出 ── */
+.town-activity-ticker {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(46%, 430px);
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(252, 250, 247, 0.92);
+  border: 1px solid rgba(232, 221, 208, 0.8);
+  box-shadow: 0 2px 6px rgba(90, 70, 50, 0.12);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: transform var(--dur-fast, .16s) var(--ease-standard, ease), box-shadow var(--dur-fast, .16s) var(--ease-standard, ease);
+}
+.town-activity-ticker:hover { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(90, 70, 50, 0.16); }
+.town-activity-ticker:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tat-name { flex: none; font-weight: 600; }
+.tat-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .78; }
+.ticker-fade-enter-active, .ticker-fade-leave-active {
+  transition: opacity .3s var(--ease-standard, ease), transform .3s var(--ease-standard, ease);
+}
+.ticker-fade-enter-from { opacity: 0; transform: translateY(-6px); }
+.ticker-fade-leave-to { opacity: 0; transform: translateY(4px); }
+
+/* 动态面板：暖纸列表（复用主题文字色） */
+.town-activity-panel { display: grid; gap: 8px; }
+.tap-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.tap-hint { color: var(--text-secondary, #9a8a78); font-size: 12px; }
+.tap-empty { color: var(--text-secondary, #9a8a78); font-size: 13px; padding: 20px 0; text-align: center; }
+.tap-list {
+  list-style: none; margin: 0; padding: 0;
+  max-height: min(52vh, 420px); overflow-y: auto;
+  display: grid; gap: 6px;
+}
+.tap-list li {
+  display: flex; gap: 10px; align-items: baseline; font-size: 13px;
+  padding: 7px 10px; border-radius: 10px;
+  border: 1px solid rgba(232, 221, 208, 0.8);
+  background: rgba(252, 250, 247, 0.65);
+}
+.tap-list time { flex: none; color: var(--text-secondary, #9a8a78); font-size: 11px; }
+.tap-name { flex: none; font-weight: 600; color: var(--text-primary); }
+.tap-text { color: var(--text-primary); opacity: .85; }
+
 /* ── 进入世界时的资源就绪遮罩 ── */
 .town-boot-mask {
   position: absolute;
@@ -2217,6 +2465,7 @@ async function startTravel() {
 }
 @container town-world (max-width: 700px) {
   .town-topbar { width: calc(100% - 24px); box-sizing: border-box; gap: 6px; }
+  .town-activity-ticker { top: 84px; max-width: 62%; }
   .town-topbar-actions { width: 100%; flex-wrap: wrap; }
   /* 顶栏在此宽度会折成两行，编辑动作卡下移避让 */
   .town-edit-actions { top: 96px; }
