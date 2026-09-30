@@ -428,7 +428,11 @@ function hasMissingImage(p) {
 
 async function fetchPaper() {
   const data = await api.getTodayNewspaper()
-  todayPaper.value = data?.newspaper || null
+  const paper = data?.newspaper || null
+  // 开窗期间报纸才印出来（手动补发 / 生成完成）：首见即算看过，别把红点留在导航栏
+  const firstArrival = Boolean(paper) && !todayPaper.value
+  todayPaper.value = paper
+  if (visible.value && firstArrival) emit('read', paper)
   schedulePoll()
 }
 

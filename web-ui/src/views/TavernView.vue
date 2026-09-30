@@ -649,11 +649,13 @@ import LinsheInput from '../components/ui/LinsheInput.vue'
 import { useBurst } from '../composables/useBurst.js'
 import { useMailboxStore } from '../stores/mailbox.js'
 import { useBackpackStore } from '../stores/backpack.js'
+import { useNewspaperStore } from '../stores/newspaper.js'
 
 const router = useRouter()
 const chat = useChatStore()
 const mailboxStore = useMailboxStore()
 const backpackStore = useBackpackStore()
+const newspaperStore = useNewspaperStore()
 
 const showMailbox = ref(false)
 const showBackpack = ref(false)
@@ -661,17 +663,10 @@ const showEmojiManager = ref(false)
 const mailboxUnread = computed(() => mailboxStore.unreadCount)
 const backpackChestReady = computed(() => backpackStore.chestReady)
 
-// 《邻舍日报》：今天的报纸是否存在 + 是否已读（红点）
+// 《邻舍日报》：未读状态由 newspaper store 统一持有（NavBar 酒馆项红点同源）
 const showNewspaper = ref(false)
-const todayPaper = ref(null)
-const newspaperUnread = computed(() => {
-  if (!todayPaper.value) return false
-  try {
-    return localStorage.getItem('linshe.newspaper.last_read') !== todayPaper.value.publish_date
-  } catch {
-    return false
-  }
-})
+const todayPaper = computed(() => newspaperStore.todayPaper)
+const newspaperUnread = computed(() => newspaperStore.unread)
 const newspaperHint = computed(() => todayPaper.value
   ? `第${todayPaper.value.edition}期已印好 · 今日事，早知道`
   : '清晨 5 点后印出 · 今日事，早知道')
@@ -682,17 +677,11 @@ function openNewspaper() {
 
 // 打开看过即消红点（今天之内不再提醒）
 function onNewspaperRead(paper) {
-  todayPaper.value = paper
-  try {
-    localStorage.setItem('linshe.newspaper.last_read', paper.publish_date)
-  } catch { /* 隐私模式下静默 */ }
+  newspaperStore.markRead(paper)
 }
 
-async function loadTodayPaper() {
-  try {
-    const data = await api.getTodayNewspaper()
-    todayPaper.value = data?.newspaper || null
-  } catch { /* 拉不到就只隐藏红点 */ }
+function loadTodayPaper() {
+  newspaperStore.fetchToday()
 }
 
 // 置顶优先，组内按 display_name 首字母排序（中文按拼音）

@@ -127,10 +127,14 @@
       <div v-if="showMoreMenu" class="more-menu-overlay" @click.self="showMoreMenu = false">
         <div class="more-menu-panel">
           <router-link to="/tavern" class="more-menu-item" @click="onMenuItemClick">
-            <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
-              <path d="M924.4 85.5H100.9c-19.3 0-35 15.7-35 35s15.7 35 35 35h59.7v790.2l348.7-179.8 355.3 179.2V155.5h59.7c19.3 0 35-15.7 35-35 0.1-19.4-15.6-35-34.9-35zM794.7 831.4L509 687.3 230.6 830.8V155.5h564.1v675.9z"/>
-              <path d="M416.8 489.1h60.8v60.8c0 19.3 15.7 35 35 35s35-15.7 35-35v-60.8h60.8c19.3 0 35-15.7 35-35s-15.7-35-35-35h-60.8v-60.8c0-19.3-15.7-35-35-35s-35 15.7-35 35v60.8h-60.8c-19.3 0-35 15.7-35 35s15.7 35 35 35z"/>
-            </svg>
+            <div class="nav-icon-wrap">
+              <svg viewBox="0 0 1024 1024" width="20" height="20" fill="currentColor">
+                <path d="M924.4 85.5H100.9c-19.3 0-35 15.7-35 35s15.7 35 35 35h59.7v790.2l348.7-179.8 355.3 179.2V155.5h59.7c19.3 0 35-15.7 35-35 0.1-19.4-15.6-35-34.9-35zM794.7 831.4L509 687.3 230.6 830.8V155.5h564.1v675.9z"/>
+                <path d="M416.8 489.1h60.8v60.8c0 19.3 15.7 35 35 35s35-15.7 35-35v-60.8h60.8c19.3 0 35-15.7 35-35s-15.7-35-35-35h-60.8v-60.8c0-19.3-15.7-35-35-35s-35 15.7-35 35v60.8h-60.8c-19.3 0-35 15.7-35 35s15.7 35 35 35z"/>
+              </svg>
+              <!-- 《邻舍日报》未读：与 NavBar 酒馆项同源红点 -->
+              <span v-if="newspaper.unread" class="nav-dot nav-dot-daily" title="今天的《邻舍日报》还没读"></span>
+            </div>
             <span>酒馆</span>
           </router-link>
           <router-link to="/town" class="more-menu-item" @click="onMenuItemClick">
@@ -292,6 +296,7 @@ import { useScheduleStore } from '../stores/schedule.js'
 import { useMailboxStore } from '../stores/mailbox.js'
 import { useGroupsStore } from '../stores/groups.js'
 import { useBackpackStore } from '../stores/backpack.js'
+import { useNewspaperStore } from '../stores/newspaper.js'
 import LinsheButton from './ui/LinsheButton.vue'
 import LinsheInput from './ui/LinsheInput.vue'
 import GearIcon from './GearIcon.vue'
@@ -314,6 +319,7 @@ const schedule = useScheduleStore()
 const mailbox = useMailboxStore()
 const groups = useGroupsStore()
 const backpack = useBackpackStore()
+const newspaper = useNewspaperStore()
 const toast = inject('toast', null)
 const showMoreMenu = ref(false)
 const charListEl = ref(null)
@@ -872,6 +878,18 @@ function formatTime(iso) {
   text-align: center;
   white-space: nowrap;
   animation: jelly-pop 0.45s cubic-bezier(0.17, 0.89, 0.32, 1.35);
+}
+
+/* 《邻舍日报》未读点：与信箱数字徽标同皮肤，收成小圆点落到图标左上位 */
+.nav-dot-daily {
+  top: -6px;
+  right: auto;
+  left: -10px;
+  width: 12px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0;
+  border-radius: 50%;
 }
 
 @keyframes jelly-pop {

@@ -75,6 +75,8 @@
             <path d="M416.8 489.1h60.8v60.8c0 19.3 15.7 35 35 35s35-15.7 35-35v-60.8h60.8c19.3 0 35-15.7 35-35s-15.7-35-35-35h-60.8v-60.8c0-19.3-15.7-35-35-35s-35 15.7-35 35v60.8h-60.8c-19.3 0-35 15.7-35 35s15.7 35 35 35z"/>
           </svg>
           <span v-if="mailbox.unreadCount > 0" class="nav-dot">{{ mailbox.unreadCount > 99 ? '99+' : mailbox.unreadCount }}</span>
+          <!-- 《邻舍日报》未读：复用信箱同一套 nav-dot 红点语言，落在左上位避免与右上数字徽标叠在一起 -->
+          <span v-if="newspaper.unread" class="nav-dot nav-dot-daily" title="今天的《邻舍日报》还没读"></span>
         </div>
         <span class="nav-label">酒馆</span>
       </router-link>
@@ -102,6 +104,7 @@ import { useEventsStore } from '../stores/events.js'
 import { useProactiveStore } from '../stores/notifications.js'
 import { useScheduleStore } from '../stores/schedule.js'
 import { useMailboxStore } from '../stores/mailbox.js'
+import { useNewspaperStore } from '../stores/newspaper.js'
 import { useUpdateStore } from '../stores/updateInfo.js'
 import { startUnifiedStream, stopUnifiedStream } from '../stores/unifiedStream.js'
 import GearIcon from './GearIcon.vue'
@@ -113,6 +116,7 @@ const events = useEventsStore()
 const proactive = useProactiveStore()
 const scheduleStore = useScheduleStore()
 const mailbox = useMailboxStore()
+const newspaper = useNewspaperStore()
 const updateInfo = useUpdateStore()
 
 function handleMomentsClick() {
@@ -184,6 +188,7 @@ onMounted(() => {
   moments.connectSSE()
   events.connectSSE()
   mailbox.startPolling()
+  newspaper.startPolling()
 })
 
 function handleRouteReselected(event) {
@@ -197,6 +202,7 @@ onUnmounted(() => {
   moments.disconnectSSE()
   events.disconnectSSE()
   mailbox.stopPolling()
+  newspaper.stopPolling()
 })
 </script>
 
@@ -307,6 +313,18 @@ onUnmounted(() => {
   text-align: center;
   white-space: nowrap;
   animation: cel-jelly 0.45s var(--ease-spring) both;
+}
+
+/* 《邻舍日报》未读点：与信箱数字徽标同皮肤同动效，只是收成小圆点、落到图标左上位 */
+.nav-dot-daily {
+  top: -5px;
+  right: auto;
+  left: -8px;
+  width: 12px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0;
+  border-radius: 50%;
 }
 
 
