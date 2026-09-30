@@ -1,12 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { canonicalJson, createTownEventService, requireText, townError } from './townEventService.js';
+import { canonicalJson, requireText, townError } from './townEventService.js';
 
 const terminal = new Set(['completed', 'cancelled', 'failed']);
 // life_*：M2 生活动作（进食/阅读/落座），与 rest 同构——在目标点计时完成，
 // 不产生工资/物品；结算效果由宿主按 type 在完成时写入需求层。
 const types = new Set(['move_to', 'wait', 'rest', 'work_shift', 'life_eat', 'life_read', 'life_sit']);
-/** Bookkeeping-only transitions: no resident-visible change, kept out of events and the activity feed. */
-export const QUIET_ACTIVITY_REASONS = new Set(['VALIDATED', 'RESERVE', 'RECOVER']);
 const decode = row => row && ({ id: row.id, worldId: row.world_id, worldEpoch: row.world_epoch,
   actorId: row.actor_id, type: row.type, phase: row.status, version: row.version,
   target: row.target, payload: JSON.parse(row.payload), ruleKey: row.rule_key, ruleVersion: row.rule_version,
@@ -20,11 +18,9 @@ const decode = row => row && ({ id: row.id, worldId: row.world_id, worldEpoch: r
  * work_shift completes only a timed attendance record: no wages/items are settled.
  */
 export function createTownActionRunner({ db, clock, getWorldEpoch, getActor, readFacts,
-  leaseMs = 180000, consumers = [] }) {
+  leaseMs = 180000 }) {
   if (!db || !clock?.now || !getWorldEpoch || !getActor || !readFacts) throw townError('MISSING_DEPENDENCY');
   if (!Number.isSafeInteger(leaseMs) || leaseMs < 1) throw townError('INVALID_LEASE');
-  const events = createTownEventService({ db, clock, getWorldEpoch,
-    validators: { 'town.action.changed': p => typeof p?.actionId === 'string' && Number.isInteger(p.version) } });
   const get = id => decode(db.prepare('SELECT * FROM town_actions WHERE id=?').get(id));
   function epoch(a) {
     requireText(a.worldId);
@@ -56,22 +52,15 @@ export function createTownActionRunner({ db, clock, getWorldEpoch, getActor, rea
     return { ...input, target: input.target ?? null, payload,
       ruleKey: input.ruleKey ?? null, ruleVersion: input.ruleVersion ?? null };
   }
-  function record(a, reason) {
-    // A recover that actually breaks (lease lost) records LEASE_EXPIRED instead, so quiet skips stay safe.
-    if (QUIET_ACTIVITY_REASONS.has(reason)) return;
-    const eventId = `action:${a.id}:${a.version}`;
-    events.append({ eventId, type: 'town.action.changed', worldId: a.worldId, worldEpoch: a.worldEpoch,
-      actorIds: [a.actorId], locationKey: a.target, occurredAt: a.updatedAt,
-      source: { system: 'town', entityId: a.id }, payload: { actionId: a.id, type: a.type,
-        phase: a.phase, version: a.version, reasonCode: reason, result: a.result } }, consumers);
-    db.prepare(`INSERT INTO town_activity_log(world_id,world_epoch,actor_id,action_id,event_id,phase,
-      reason_code,rule_key,rule_version,location_key,occurred_at,result) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(a.worldId,a.worldEpoch,a.actorId,a.id,eventId,a.phase,reason,a.ruleKey,a.ruleVersion,a.target,a.updatedAt,
-        a.result === null ? null : canonicalJson(a.result));
-  }
+  /**
+   * 命令入口：**幂等台账可选**——调用方给了 idempotencyKey 才落台账（供可重放的外部调用方；
+   * 模拟子时钟每 5 秒续租一次 advance，若逐条记账会让 requests 日增数十万行）。
+   * 不传 key 时只做事务 + 版本校验后执行，不留任何记录。
+   */
   function request(command, input, fn) {
     return db.transaction(() => {
-      epoch(input); requireText(input.idempotencyKey);
+      epoch(input);
+      if (typeof input.idempotencyKey !== 'string' || !input.idempotencyKey) return fn();
       const serialized = canonicalJson({ command, input });
       const previous = db.prepare('SELECT * FROM town_action_requests WHERE world_id=? AND world_epoch=? AND request_key=?')
         .get(input.worldId,input.worldEpoch,input.idempotencyKey);
@@ -89,10 +78,10 @@ export function createTownActionRunner({ db, clock, getWorldEpoch, getActor, rea
   function create(input) {
     return request('create', input, () => {
       const a = validate(input); const id = randomUUID();
-      db.prepare(`INSERT INTO town_actions(id,world_id,world_epoch,actor_id,type,status,target,payload,rule_key,rule_version,updated_at)
-        VALUES(?,?,?,?,?,'validated',?,?,?,?,?)`).run(id,a.worldId,a.worldEpoch,a.actorId,a.type,a.target,
+      db.prepare(`INSERT INTO town_actions(id,world_id,world_epoch,actor_id,type,status,target,payload,rule_key,rule_version,updated_at,last_reason)
+        VALUES(?,?,?,?,?,'validated',?,?,?,?,?,'VALIDATED')`).run(id,a.worldId,a.worldEpoch,a.actorId,a.type,a.target,
         canonicalJson(a.payload),a.ruleKey,a.ruleVersion,clock.now());
-      const result = get(id); record(result,'VALIDATED'); return result;
+      return get(id);
     });
   }
   function resources(a) {
@@ -165,11 +154,11 @@ export function createTownActionRunner({ db, clock, getWorldEpoch, getActor, rea
       }
       // Lease renewal alone has no activity/event/version churn.
       if (phase === a.phase && command !== 'recover') return a;
-      const updated = db.prepare(`UPDATE town_actions SET status=?,version=version+1,started_at=?,due_at=?,updated_at=?,failure_reason=?,result=?
-        WHERE id=? AND version=?`).run(phase,started,due,now,failure,result && canonicalJson(result),a.id,a.version);
+      const updated = db.prepare(`UPDATE town_actions SET status=?,version=version+1,started_at=?,due_at=?,updated_at=?,failure_reason=?,result=?,last_reason=?
+        WHERE id=? AND version=?`).run(phase,started,due,now,failure,result && canonicalJson(result),reason,a.id,a.version);
       if (updated.changes !== 1) throw townError('VERSION_CONFLICT');
       if (terminal.has(phase)) db.prepare('DELETE FROM town_resource_claims WHERE action_id=?').run(a.id);
-      const next = get(a.id); record(next,reason); return next;
+      return get(a.id);
     });
   }
   function cancelActive(input) {
@@ -182,6 +171,6 @@ export function createTownActionRunner({ db, clock, getWorldEpoch, getActor, rea
       return { count: actions.length, actions };
     });
   }
-  return { validate, create, get, events, cancelActive,
+  return { validate, create, get, cancelActive,
     ...Object.fromEntries(['reserve','start','advance','cancel','fail','recover'].map(command => [command,input => change(command,input)])) };
 }

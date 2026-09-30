@@ -156,11 +156,6 @@ defaultTimeoutMs: parseInt(process.env.VECTOR_DEFAULT_TIMEOUT_MS, 10) || 120000,
         restEnergyPerHour: 18,          // 完成 rest 动作：每小时恢复精力
         encounterSocial: { silent_pass: 6, brief_chat: 10, chat: 14, interrupted: 4 }, // 相遇恢复社交
       },
-      influence: {
-        activeCap: 8,                   // 每人活跃心情影响项上限（超出淘汰最早一条）
-        chatTtlMs: 6 * 3600_000,        // 相遇类影响项的有效期
-        chatIntensity: 0.15,            // 愉快相遇的心情强度（正值）
-      },
     },
     // M3 有向关系：相遇结果 → 双向熟悉/好感增量；每日熟悉度上限防重复刷收益
     social: {

@@ -283,39 +283,6 @@ export function composeImagePrompt(prompt, items = [], { ragQuery = '' } = {}) {
   };
 }
 
-function persistPreparation(result, db = getDb()) {
-  const snapshot = {
-    scene: result.scene,
-    query: result.ragQuery,
-    selectedTags: result.selection.selectedTags,
-    removedTags: result.selection.removedTags,
-    appliedRules: result.selection.appliedRules,
-    items: result.retrieval.items.map(item => ({
-      id: item.id,
-      category: item.category,
-      title: item.title,
-      content: item.content,
-      score: item.score,
-    })),
-  };
-  const inserted = db.prepare(`
-    INSERT INTO image_prompt_preparations (
-      scene, prompt_original, prompt_refined, knowledge_ids, knowledge_version,
-      retrieval_mode, retrieval_snapshot, optimization_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    result.scene,
-    result.promptOriginal,
-    result.promptRefined,
-    JSON.stringify(result.retrieval.knowledgeIds),
-    result.retrieval.knowledgeVersion,
-    result.retrieval.mode,
-    JSON.stringify(snapshot),
-    result.status,
-  );
-  return Number(inserted.lastInsertRowid);
-}
-
 function emptySelection() {
   return { selectedTags: [], removedTags: [], appliedRules: [] };
 }
@@ -339,7 +306,7 @@ export async function prepareImagePrompt(prompt, {
   disableRAG = false,
   alreadyPrepared = false,
   skipOptimization = false,
-  persist = true,
+  // 不再落库：检索快照只是诊断留档，全项目无读者（曾占库 68%），需要时从返回值里看即可
   db = null,
   ragTimeoutMs = undefined,
 } = {}) {
@@ -364,6 +331,6 @@ export async function prepareImagePrompt(prompt, {
   console.log(`[imagePromptKnowledge] query=${JSON.stringify(retrievalQuery.slice(0, 160))} mode=${retrieval.mode} duration=${retrieval.durationMs}ms tags=${JSON.stringify(foundTags)}`);
   const status = selection.promptRefined === original ? 'fallback' : 'deterministic';
   const result = { promptOriginal: original, ragQuery: retrievalQuery, promptRefined: selection.promptRefined, status, scene, retrieval, selection };
-  if (persist) result.preparationId = persistPreparation(result, database);
+  // 结果只在内存中返回（promptRefined / retrieval 等），不写数据库
   return result;
 }

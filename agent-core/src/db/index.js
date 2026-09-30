@@ -181,18 +181,6 @@ function initSchema(db) {
       finished_at DATETIME
     );
 
-    CREATE TABLE IF NOT EXISTS image_prompt_preparations (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      scene TEXT NOT NULL DEFAULT 'chat',
-      prompt_original TEXT NOT NULL,
-      prompt_refined TEXT NOT NULL,
-      knowledge_ids TEXT NOT NULL DEFAULT '[]',
-      knowledge_version TEXT,
-      retrieval_mode TEXT NOT NULL DEFAULT 'fallback',
-      retrieval_snapshot TEXT NOT NULL DEFAULT '{}',
-      optimization_status TEXT NOT NULL DEFAULT 'fallback',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
 
     -- 生图提示词知识库（独立于聊天记忆，仅供生图 prompt 生产链检索）
     CREATE TABLE IF NOT EXISTS image_prompt_knowledge (
@@ -890,6 +878,10 @@ function initSchema(db) {
   // 迁移: town_encounters 加 outcome_json / polished_summary（M0 相遇规则结算）
   migrateTownEncounterOutcome(db);
 
+  // 迁移: 删除 image_prompt_preparations（生图提示词诊断留档，全项目无读者，
+  // 曾是全库最大表：113MB/1.7 万行；写入路径已一并移除）
+  dropImagePromptPreparations(db);
+
   // 迁移: moment_unread 计数 → 时序方案 (last_moments_seen_at)
   migrateMomentUnreadToTimestamp(db);
 
@@ -1501,6 +1493,18 @@ export function migrateNewspaperWorldDismissed(db) {
  * M0 相遇结算：town_encounters 加 outcome_json（规则结算的结构化结果）与
  * polished_summary（LLM 润色，仅表现）。可重复执行；旧库旧行两列为空即走兼容路径。
  */
+export function dropImagePromptPreparations(db) {
+  try {
+    const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='image_prompt_preparations'").get();
+    if (!exists) return;
+    const before = db.prepare('SELECT count(*) n FROM image_prompt_preparations').get().n;
+    db.exec('DROP TABLE image_prompt_preparations');
+    console.log(`[db] 已删除 image_prompt_preparations（${before} 行诊断留档，无读者）`);
+  } catch (err) {
+    console.log('[db] dropImagePromptPreparations skipped:', err.message);
+  }
+}
+
 export function migrateTownEncounterOutcome(db) {
   try {
     const cols = db.prepare(`PRAGMA table_info(town_encounters)`).all();

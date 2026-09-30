@@ -1,145 +1,137 @@
 /**
- * 居民活动流水（T11 §8.1/§9.3）：把 town_activity_log 的动作流转翻译成可读文案。
+ * 居民活动流水（T11 §8.1）：**一行动作 = 一条动态**，直接读 `town_actions`。
  *
- * 只做只读展示层：数据全部来自已落库的动作记录（JOIN town_actions 拿动作类型/地点），
- * 文案是事实的直述，不推断数值。噪音过滤：wait 类、cancelled、睡觉中的分段 rest
- * 不进信息流；rest 的完成保留在居民个人列表里（「休息好了」）。
- * 地点用居民所在地图的地点名解析，不跨图猜同名 key。
+ * 精简口径（2026-09-30）：原先每次状态流转都写 town_activity_log + 领域事件，
+ * 而续租命令每 5 秒还要写一条幂等台账——一个 15 分钟的动作能产生 200 行记录。
+ * 现在动作行自带状态、理由（last_reason）、规则来源与产物，信息流不再另开流水表：
+ *   - 一条动态 ≈ 一次动作（做完/失败/进行中），量级与居民真实活动一致
+ *   - 「理由」来自 last_reason（SCHEDULE_CHANGED / DURATION_ELAPSED / PATH_UNREACHABLE…）
+ *     与 rule_key（作息·上班 / 需求·吃饭 …），回答“为什么做这件事 / 为什么中断”
+ *   - 取消态不展示（多为调度切换噪音，理由仍留在动作行可查）
  */
 import { getDb } from '../../db/index.js';
 import { createTownActorRegistry } from './townActorRegistry.js';
+import { createActorDirectory } from './townActorDirectory.js';
 
-const GLOBAL_PHASES = "('running','completed','failed')";
-
-/** 地点/人名解析的请求级缓存（活动流水与居民状态共用） */
-export function createResolver(db, registry, worldId) {
-  const actorCache = new Map();
-  const locationCache = new Map();
-  return {
-    actor(actorId) {
-      if (actorCache.has(actorId)) return actorCache.get(actorId);
-      let info = { name: '居民', mapId: null };
-      try {
-        const actor = registry.getActor(actorId, worldId, { followMerged: false });
-        if (actor?.npcExists) {
-          const row = db.prepare('SELECT map_id, display_name FROM town_npcs WHERE id = ?').get(actor.npcId);
-          if (row) info = { name: row.display_name || '居民', mapId: row.map_id };
-        } else if (actor?.characterExists) {
-          const row = db.prepare(`SELECT c.display_name, c.name, tc.map_id FROM characters c
-            LEFT JOIN town_characters tc ON tc.character_id = c.character_id WHERE c.id = ?`).get(actor.characterId);
-          if (row) info = { name: row.display_name || row.name || '居民', mapId: row.map_id };
-        }
-      } catch { /* 缺档居民回退默认名 */ }
-      actorCache.set(actorId, info);
-      return info;
-    },
-    location(mapId, key) {
-      if (!key) return null;
-      const cacheKey = `${mapId ?? 'x'}:${key}`;
-      if (locationCache.has(cacheKey)) return locationCache.get(cacheKey);
-      const name = mapId != null
-        ? db.prepare('SELECT name FROM town_locations WHERE map_id = ? AND key = ?').get(mapId, key)?.name || null
-        : null;
-      locationCache.set(cacheKey, name);
-      return name;
-    },
-  };
-}
-
-/** 单条动作记录 → 可读文案；返回 null 表示噪音（不在信息流展示）。 */
-export function describeActivity(row, locationName) {
-  const where = locationName ? `在${locationName}` : '在镇上';
-  const phase = row.phase;
-  const type = row.action_type;
-  if (row.phase === 'cancelled') return null;
-  switch (type) {
-    case 'move_to':
-      if (phase === 'completed') return `到了${locationName || '目的地'}`;
-      if (phase === 'failed') {
-        return row.reason_code === 'PATH_UNREACHABLE'
-          ? `想去${locationName || '某处'}，但路走不通` : `去${locationName || '某处'}的路上出了岔子`;
-      }
-      return `动身去${locationName || '某处'}`;
-    case 'work_shift':
-      if (phase === 'running') return `${where}上工`;
-      if (phase === 'completed') return `结束了${locationName ? `在${locationName}` : ''}的工作`;
-      return `${where}的班次中断了`;
-    case 'rest':
-      if (phase === 'completed') return `${where}休息好了`;
-      return null; // 睡觉的分段进行中记录不展示
-    case 'life_eat':
-      if (phase === 'running') return `${where}找吃的`;
-      if (phase === 'completed') return `${where}吃了点东西`;
-      return `${where}没能吃上饭`;
-    case 'life_read':
-      if (phase === 'running') return `${where}看书`;
-      if (phase === 'completed') return `${where}读了会儿书`;
-      return `${where}没看成书`;
-    case 'life_sit':
-      if (phase === 'running') return `${where}歇脚`;
-      if (phase === 'completed') return `${where}坐了一会儿`;
-      return null;
-    case 'wait':
-      return phase === 'running' ? `${where}闲逛` : null;
-    default:
-      return null;
-  }
-}
+const REASON_LABELS = Object.freeze({
+  DURATION_ELAPSED: '做完了', ARRIVED: '到了', SCHEDULE_CHANGED: '作息变了',
+  PATH_UNREACHABLE: '路走不通', LEFT_TARGET: '中途离开了', LEASE_EXPIRED: '被打断了',
+  SCHEDULE_BLOCKED: '日程不让做', TARGET_OR_ACTOR_MISSING: '目标没了', ACTOR_UNAVAILABLE: '人不在镇上',
+  MEMBERSHIP_CHANGED: '身份变了', SIMULATION_SCOPE_ENDED: '离开了这张图', RESOURCE_BUSY: '位置被占了',
+  START: '开始了', VALIDATED: '刚创建',
+});
+const RULE_LABELS = Object.freeze({
+  'town.routine.work': '作息·上班', 'town.routine.rest': '作息·休息', 'town.routine.wait': '作息·空闲',
+  'town.life.eat': '需求·吃饭', 'town.life.eat.urgent': '需求·饿得急', 'town.life.read': '兴趣·阅读',
+  'town.life.sit': '需求·歇脚',
+});
 
 const clampLimit = (value, fallback, max) => {
   const n = Number.parseInt(value, 10);
   return Number.isFinite(n) && n >= 1 ? Math.min(n, max) : fallback;
 };
 
+/** 规则来源 → 人话理由（含避雨等后缀规则）。 */
+export function ruleLabel(ruleKey) {
+  if (!ruleKey) return null;
+  if (RULE_LABELS[ruleKey]) return RULE_LABELS[ruleKey];
+  if (ruleKey.startsWith('town.shelter')) return '天气·避雨';
+  const tail = String(ruleKey).split('.').pop();
+  return tail || null;
+}
+
+/** 一次动作 → 一条动态文案；返回 null 表示不展示（取消态等噪音）。 */
+export function describeAction(row, locationName) {
+  const where = locationName ? `在${locationName}` : '在镇上';
+  const to = locationName || '目的地';
+  const status = row.status;
+  if (status === 'cancelled') return null;
+  switch (row.type) {
+    case 'move_to':
+      if (status === 'completed') return `到了${to}`;
+      if (status === 'failed') return row.failure_reason === 'PATH_UNREACHABLE' ? `想去${to}，但路走不通` : `去${to}的路上出了岔子`;
+      return `在去${to}的路上`;
+    case 'work_shift':
+      if (status === 'completed') return `结束了${locationName ? `在${locationName}` : ''}的工作`;
+      if (status === 'failed') return `${where}的班次中断了`;
+      return `${where}上工`;
+    case 'rest':
+      if (status === 'completed') return `${where}休息好了`;
+      if (status === 'failed') return `${where}没休息成`;
+      return `${where}休息`;
+    case 'life_eat':
+      if (status === 'completed') return `${where}吃了点东西`;
+      if (status === 'failed') return `${where}没能吃上饭`;
+      return `${where}找吃的`;
+    case 'life_read':
+      if (status === 'completed') return `${where}读了会儿书`;
+      if (status === 'failed') return `${where}没看成书`;
+      return `${where}看书`;
+    case 'life_sit':
+      if (status === 'failed') return null;
+      return status === 'completed' ? `${where}坐了一会儿` : `${where}歇脚`;
+    case 'wait':
+      return status === 'running' ? `${where}闲逛` : null;
+    default:
+      return null;
+  }
+}
+
+/** 行动作行的「理由」：失败先看失败原因，否则看规则来源／上次流转原因。 */
+export function actionReason(row) {
+  if (row.status === 'failed' && row.failure_reason) return REASON_LABELS[row.failure_reason] || row.failure_reason;
+  const rule = ruleLabel(row.rule_key);
+  if (rule) return rule;
+  return REASON_LABELS[row.last_reason] || row.last_reason || null;
+}
+
 /**
  * @param {object} input
  * @param {object} input.db       better-sqlite3 连接
- * @param {object} input.registry townActorRegistry
+ * @param {object} input.registry townActorRegistry（用于名字/地图解析）
  */
-export function createTownActivityFeed({ db, registry, dedupeWindowMs = 10 * 60_000 }) {
+export function createTownActivityFeed({ db, registry }) {
   if (!db?.prepare || !registry?.getActor) throw new TypeError('townActivityFeed missing dependency');
 
+
+  const ACTIONS_SQL = `SELECT id, actor_id, type, status, target, rule_key, last_reason, failure_reason,
+      started_at, due_at, updated_at FROM town_actions
+    WHERE world_id = ? AND status != 'cancelled'`;
+
   function toEntries(rows, worldId) {
-    const resolve = createResolver(db, registry, worldId);
+    const directory = createActorDirectory({ db, registry, worldId });
     const entries = [];
-    const lastKept = new Map();   // actorId -> { text, occurredAt }
+    const lastKept = new Map();
     for (const row of rows) {
-      const actor = resolve.actor(row.actor_id);
-      const locationName = resolve.location(actor.mapId, row.location_key);
-      const text = describeActivity(row, locationName);
+      const actor = directory.actor(row.actor_id);
+      const text = describeAction(row, directory.location(actor.mapId, row.target));
       if (!text) continue;
-      // 降噪：同一居民、同一句文案在窗口内的连续重复（抖动残留/反复取消重试）只保留最新一条，
-      // 避免信息流被「动身去 X」刷屏；跨窗口的正常重复不受影响。
+      const occurredAt = row.started_at ?? row.updated_at;
+      // 同居民、同文案、1 小时内连续重复折叠：上班/休息会被切成 15 分钟一段，
+      // 不加宽窗口的话「结束了…的工作」会每刻钟刷一条（那里只是同一段生活的续写）
       const previous = lastKept.get(row.actor_id);
-      if (previous && previous.text === text && previous.occurredAt - row.occurred_at <= dedupeWindowMs) continue;
-      lastKept.set(row.actor_id, { text, occurredAt: row.occurred_at });
-      entries.push({ seq: row.seq, actorId: row.actor_id, name: actor.name, text,
-        occurredAt: row.occurred_at });
+      if (previous && previous.text === text && previous.occurredAt - occurredAt <= 60 * 60_000) continue;
+      lastKept.set(row.actor_id, { text, occurredAt });
+      entries.push({ seq: row.id, actorId: row.actor_id, name: actor.name, text,
+        reason: actionReason(row), status: row.status, occurredAt });
     }
     return entries;
   }
 
-  /** 全镇信息流（左上角浮窗 / 动态面板）：排除 wait 与睡觉分段，控制噪音。 */
+  /** 全镇信息流（左上角浮窗 / 动态面板）。 */
   function recent({ limit = 40 } = {}) {
     const world = registry.getWorldState();
-    const rows = db.prepare(`SELECT l.seq, l.actor_id, l.phase, l.reason_code, l.location_key,
-        l.occurred_at, a.type AS action_type
-      FROM town_activity_log l JOIN town_actions a ON a.id = l.action_id
-      WHERE l.world_id = ? AND l.phase IN ${GLOBAL_PHASES} AND a.type != 'wait'
-        AND NOT (a.type = 'rest' AND l.phase = 'running')
-      ORDER BY l.seq DESC LIMIT ?`).all(world.worldId, clampLimit(limit, 40, 100));
+    const rows = db.prepare(`${ACTIONS_SQL} AND type != 'wait'
+      ORDER BY COALESCE(started_at, updated_at) DESC LIMIT ?`).all(world.worldId, clampLimit(limit, 40, 100));
     return toEntries(rows, world.worldId);
   }
 
-  /** 单个居民的最近行动记录（对话框「动态」页签，默认 100 条）。 */
+  /** 单个居民的最近动态（对话框「动态」页签，默认 100 条）。 */
   function ofActor(actorId, { limit = 100 } = {}) {
     const world = registry.getWorldState();
     if (typeof actorId !== 'string' || !actorId) return [];
-    const rows = db.prepare(`SELECT l.seq, l.actor_id, l.phase, l.reason_code, l.location_key,
-        l.occurred_at, a.type AS action_type
-      FROM town_activity_log l JOIN town_actions a ON a.id = l.action_id
-      WHERE l.world_id = ? AND l.actor_id = ? AND l.phase IN ${GLOBAL_PHASES}
-      ORDER BY l.seq DESC LIMIT ?`).all(world.worldId, actorId, clampLimit(limit, 100, 200));
+    const rows = db.prepare(`${ACTIONS_SQL} AND actor_id = ?
+      ORDER BY COALESCE(started_at, updated_at) DESC LIMIT ?`).all(world.worldId, actorId, clampLimit(limit, 100, 200));
     return toEntries(rows, world.worldId);
   }
 

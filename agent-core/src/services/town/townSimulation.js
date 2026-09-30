@@ -119,9 +119,10 @@ export function createTownSimulation({ db, clock, registry, readActorFacts, move
   }
   function getState(actorId) { return hasTable() ? load(registry.getWorldState(), actorId) : null; }
   function command(method, action, reasonCode) {
+    // 不传 idempotencyKey：模拟命令由自己生成、无重放来源，不需要幂等台账
+    // （续租 advance 每 5 秒一次，逐条记账曾让 town_action_requests 日增数十万行）
     return runner[method]({ worldId: action.worldId, worldEpoch: action.worldEpoch, actionId: action.id,
       expectedVersion: action.version,
-      idempotencyKey: `sim:${action.id}:${method}:${action.version}:${executionSequence}`,
       ...(reasonCode ? { reasonCode } : {}) });
   }
   function validateFacts(value, actor, world) {
@@ -158,8 +159,7 @@ export function createTownSimulation({ db, clock, registry, readActorFacts, move
     const plan = state.plan;
     let action = runner.create({ worldId: world.worldId, worldEpoch: world.epoch, actorId, type,
       target: plan.target, payload: type === 'move_to' ? {} : { durationMs: plan.durationMs },
-      ruleKey: plan.ruleKey, ruleVersion: TOWN_SIMULATION_RULE_VERSION,
-      idempotencyKey: `sim:create:${actorId}:${state.decisionSequence}:${type}` });
+      ruleKey: plan.ruleKey, ruleVersion: TOWN_SIMULATION_RULE_VERSION });
     state.actionId = action.id;
     action = command('reserve', action);
     action = command('start', action);

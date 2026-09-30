@@ -60,9 +60,10 @@ test('多图各图只推进本图 actor：外图 tick 不取消本图动作', as
   // 核心断言：不允许出现跨图取消。
   // schedule_or_target_blocked = 外图 runtime 读不到 agent 而取消；
   // SIMULATION_SCOPE_ENDED = 启动 reconcile 把外图 actor 当成离开作用域而取消。
-  const crossCancels = db.prepare(`SELECT reason_code, COUNT(*) c FROM town_activity_log
-    WHERE reason_code IN ('schedule_or_target_blocked','SIMULATION_SCOPE_ENDED')
-    GROUP BY reason_code`).all();
+  // 精简后理由落在动作行 last_reason（town_activity_log 已删除）
+  const crossCancels = db.prepare(`SELECT last_reason AS reason_code, COUNT(*) c FROM town_actions
+    WHERE last_reason IN ('schedule_or_target_blocked','SIMULATION_SCOPE_ENDED')
+    GROUP BY last_reason`).all();
   assert.deepEqual(crossCancels, [], `出现跨图取消: ${JSON.stringify(crossCancels)}`);
 
   // 动作寿命：被本图正常调度的动作不应秒建秒删（创建后 1s 内被取消）

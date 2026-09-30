@@ -605,7 +605,6 @@ async function _execute(rawPrompt, opts) {
       scene: opts.promptScene || opts.scene || 'chat',
       alreadyPrepared: opts.alreadyPrepared === true,
       skipOptimization: opts.skipOptimization === true,
-      persist: opts.persistPreparation !== false,
       ragTimeoutMs: opts.ragTimeoutMs,
     });
     if (_limitEnabled()) {
@@ -618,7 +617,6 @@ async function _execute(rawPrompt, opts) {
       promptOriginal: preparation.promptOriginal,
       promptRagQuery: preparation.ragQuery,
       promptRefined: preparation.promptRefined,
-      promptPreparationId: preparation.preparationId,
       promptKnowledgeIds: preparation.retrieval.knowledgeIds,
       promptKnowledgeVersion: preparation.retrieval.knowledgeVersion,
       promptRetrievalMode: preparation.retrieval.mode,

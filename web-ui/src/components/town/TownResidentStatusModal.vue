@@ -17,6 +17,15 @@
           <span class="trs-need-value">{{ need.value }}</span>
         </div>
       </section>
+      <section v-if="status.routine && status.routine.length" class="trs-block">
+        <h3>今日日程</h3>
+        <ul class="trs-list trs-routine">
+          <li v-for="(slot, index) in status.routine" :key="index">
+            <span class="trs-slot-time">{{ slot.start }}–{{ slot.end }}</span>
+            <span class="trs-slot-activity">{{ slot.activity }}</span>
+          </li>
+        </ul>
+      </section>
       <section v-if="status.goals && status.goals.length" class="trs-block">
         <h3>在追的目标</h3>
         <ul class="trs-list">
@@ -84,4 +93,7 @@ defineEmits(['update:modelValue', 'refresh'])
   padding: 5px 10px; border: 1px solid rgba(161, 132, 110, .3); border-radius: 10px;
   background: rgba(255, 251, 243, .65);
 }
+.trs-routine li { justify-content: flex-start; }
+.trs-slot-time { flex: none; color: #a1846e; font-variant-numeric: tabular-nums; }
+.trs-slot-activity { color: #4a3a2c; }
 </style>

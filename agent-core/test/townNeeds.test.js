@@ -59,52 +59,31 @@ test('需求永远在 0-100 且有限；离线间隔按上限截断', () => {
   for (const key of NEED_KEYS) assert.ok(Number.isFinite(later[key]) && later[key] >= 0);
 });
 
-test('需求效果来源幂等：同一 sourceKey 只生效一次', () => {
+test('需求效果：调用即生效、数值有界（不再有来源台账表）', () => {
   const needs = makeService();
   needs.settleNeeds(W, 'actor-d', T0);
-  const first = needs.applyNeedEffects({ worldId: W, actorId: 'actor-d',
-    sourceKey: 'rest:act-1', effects: { energy: 30 }, nowUtcMs: T0 });
-  const second = needs.applyNeedEffects({ worldId: W, actorId: 'actor-d',
-    sourceKey: 'rest:act-1', effects: { energy: 30 }, nowUtcMs: T0 + 1 });
-  assert.equal(first, true);
-  assert.equal(second, false, '重复消费同一来源不得重复加分');
-  const current = needs.getNeeds(W, 'actor-d', T0);
-  assert.equal(current.energy, 100, '恢复被夹在 100（起始即满）');
-  // 从低位恢复
-  needs.applyNeedEffects({ worldId: W, actorId: 'actor-d', sourceKey: 'drain', effects: { energy: -60 }, nowUtcMs: T0 + 2 });
-  needs.applyNeedEffects({ worldId: W, actorId: 'actor-d', sourceKey: 'rest:act-2', effects: { energy: 10 }, nowUtcMs: T0 + 3 });
+  assert.equal(needs.applyNeedEffects({ worldId: W, actorId: 'actor-d',
+    effects: { energy: 30 }, nowUtcMs: T0 }), true);
+  assert.equal(needs.getNeeds(W, 'actor-d', T0).energy, 100, '恢复被夹在 100（起始即满）');
+  // 从低位恢复，且不出现越界
+  needs.applyNeedEffects({ worldId: W, actorId: 'actor-d', effects: { energy: -60 }, nowUtcMs: T0 + 2 });
+  needs.applyNeedEffects({ worldId: W, actorId: 'actor-d', effects: { energy: 10 }, nowUtcMs: T0 + 3 });
   assert.equal(needs.getNeeds(W, 'actor-d', T0).energy, 50);
+  // 是否重复结算由调用方契约保证（动作终态唯一 / 相遇结算单事务），这里只验证数值语义
+  assert.equal(getDb().prepare("SELECT count(*) n FROM sqlite_master WHERE type='table' AND name='town_need_effects'").get().n, 0,
+    '不再存在 town_need_effects 表');
 });
 
-test('心情影响项：去重、过期失效、同类边际递减、活跃上限', () => {
+test('综合心情只看需求基线（影响项机制已删除）', () => {
   const needs = makeService();
-  // 先压低需求基线，避免心情饱和在 +1 上限掩盖影响项差异
-  for (const actorId of ['actor-e', 'actor-f']) {
-    needs.settleNeeds(W, actorId, T0);
-    needs.applyNeedEffects({ worldId: W, actorId, sourceKey: 'drain', effects: { satiety: -100 }, nowUtcMs: T0 });
-  }
-  const base = { worldId: W, nowUtcMs: T0, ttlMs: HOUR, kind: 'pleasant_chat', intensity: 0.15 };
-  assert.equal(needs.addMoodInfluence({ ...base, actorId: 'actor-e', sourceKey: 'enc:1' }), true);
-  assert.equal(needs.addMoodInfluence({ ...base, actorId: 'actor-e', sourceKey: 'enc:1' }), false, '同一来源不重复叠加');
-  needs.addMoodInfluence({ ...base, actorId: 'actor-e', sourceKey: 'enc:2' });
-  const twoMood = needs.computeMood({ worldId: W, actorId: 'actor-e', nowUtcMs: T0 + 1 }).mood;
-  needs.addMoodInfluence({ ...base, actorId: 'actor-f', sourceKey: 'enc:1' });
-  const oneMood = needs.computeMood({ worldId: W, actorId: 'actor-f', nowUtcMs: T0 + 1 }).mood;
-  assert.ok(twoMood > oneMood, '两条应比一条更高');
-  // 递减曲线：第 n 条同类影响贡献 intensity/(1+0.5×(n-1))，第二条 = 0.15/1.5 = 0.1
-  assert.ok(Math.abs((twoMood - oneMood) - 0.1) < 1e-9, '第二条边际递减');
-
-  // 过期影响项不再参与
-  const expired = needs.computeMood({ worldId: W, actorId: 'actor-f', nowUtcMs: T0 + HOUR + 1 });
-  assert.ok(expired.mood < oneMood, '过期后心情回落');
-  assert.equal(needs.listActiveInfluences(W, 'actor-f', T0 + HOUR + 1).length, 0);
-
-  // 活跃上限：插入超过 cap 条后只保留最近 cap 条
-  for (let k = 0; k < 12; k++) {
-    needs.addMoodInfluence({ worldId: W, actorId: 'actor-g', sourceKey: `gift:${k}`,
-      kind: 'helped', intensity: 0.1, nowUtcMs: T0 + k, ttlMs: 10 * HOUR });
-  }
-  assert.equal(needs.listActiveInfluences(W, 'actor-g', T0 + 100).length, config.town.needs.influence.activeCap);
+  needs.settleNeeds(W, 'actor-e', T0);
+  const full = needs.computeMood({ worldId: W, actorId: 'actor-e' });
+  assert.equal(full.mood, 1, '需求全满 → 心情 +1');
+  needs.applyNeedEffects({ worldId: W, actorId: 'actor-e', effects: { satiety: -100, energy: -100, social: -100, fun: -100 }, nowUtcMs: T0 });
+  const low = needs.computeMood({ worldId: W, actorId: 'actor-e' });
+  assert.ok(low.mood < 0.5, '需求下降 → 心情回落');
+  assert.equal(getDb().prepare("SELECT count(*) n FROM sqlite_master WHERE type='table' AND name='town_mood_influences'").get().n, 0,
+    '不再存在 town_mood_influences 表');
 });
 
 test('性格派生稳定、兴趣来自本地关键词', () => {
@@ -151,12 +130,11 @@ test('M1 集成：休息恢复精力、相遇恢复社交（零模型）', async
   for (let i = 0; i < 4; i++) await stepA();
   assert.equal(db.prepare('SELECT status FROM town_encounters WHERE id = ?').get(encounterId).status, 'done');
   const actorsA = simA.npcIds.map(id => registry.resolveAgentKey(`npc:${id}`).actorId);
-  const socialRows = db.prepare(`SELECT actor_id, effects_json FROM town_need_effects
-    WHERE source_key = ?`).all(`encounter:${encounterId}`);
-  assert.equal(socialRows.length, 2, '双方社交需求恢复各一次');
-  assert.equal(JSON.parse(socialRows[0].effects_json).social, config.town.needs.recovery.encounterSocial.silent_pass);
-  // silent_pass 不留心情影响项；需求行已建立且在衰减
-  assert.equal(db.prepare(`SELECT count(*) n FROM town_mood_influences WHERE source_key = ?`).get(`encounter:${encounterId}`).n, 0);
+  // 社交恢复直接体现在需求值上（不再有台账表）：双方社交需求高于纯衰减的水平
+  for (const actorId of actorsA) {
+    const social = JSON.parse(getDb().prepare('SELECT needs_json FROM town_resident_needs WHERE actor_id = ?').get(actorId).needs_json).social;
+    assert.ok(social > 95, `相遇后社交应接近满值（含正常衰减），实际 ${social}`);
+  }
   const needsRowA = db.prepare('SELECT needs_json FROM town_resident_needs WHERE actor_id = ?').get(actorsA[0]);
   assert.ok(needsRowA, '需求状态应已落库');
   assert.ok(JSON.parse(needsRowA.needs_json).satiety < 100, 'satiety 应随时间衰减');
@@ -175,15 +153,15 @@ test('M1 集成：休息恢复精力、相遇恢复社交（零模型）', async
   const stepB = async (ms = 5 * 60_000) => { now += ms; simB.step(ms); clockRef.now = now; await new Promise(r => setImmediate(r)); };
   await stepB(); // 建立需求游标
   // 压低精力，恢复量才可观察
-  const row = db.prepare('SELECT needs_json FROM town_resident_needs WHERE actor_id = ?').get(actorB);
+  const row = getDb().prepare('SELECT needs_json FROM town_resident_needs WHERE actor_id = ?').get(actorB);
   const lowered = { ...JSON.parse(row.needs_json), energy: 40 };
-  db.prepare('UPDATE town_resident_needs SET needs_json = ? WHERE actor_id = ?').run(JSON.stringify(lowered), actorB);
+  getDb().prepare('UPDATE town_resident_needs SET needs_json = ? WHERE actor_id = ?').run(JSON.stringify(lowered), actorB);
   // 60 秒步长：资源租约 3 分钟内必须续租（生产由 5 秒模拟子时钟驱动），否则动作会 LEASE_LOST
   for (let i = 0; i < 40; i++) await stepB(60_000);
-  const restEffects = db.prepare(`SELECT count(*) n FROM town_need_effects
-    WHERE actor_id = ? AND source_key LIKE 'rest:%'`).get(actorB).n;
-  assert.ok(restEffects >= 1, '完成的 rest 动作应结算精力恢复');
-  const energyAfter = JSON.parse(db.prepare('SELECT needs_json FROM town_resident_needs WHERE actor_id = ?')
+  const restDone = getDb().prepare(`SELECT count(*) n FROM town_actions
+    WHERE actor_id = ? AND type = 'rest' AND status = 'completed'`).get(actorB).n;
+  assert.ok(restDone >= 1, '完成的 rest 动作应结算精力恢复（看动作行）');
+  const energyAfter = JSON.parse(getDb().prepare('SELECT needs_json FROM town_resident_needs WHERE actor_id = ?')
     .get(actorB).needs_json).energy;
   assert.ok(energyAfter > 45, `精力应从 40 显著恢复，实际 ${energyAfter}`);
   assert.ok(energyAfter <= 100);

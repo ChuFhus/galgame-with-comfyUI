@@ -19,39 +19,35 @@ const W = 'w-social';
 const T0 = Date.parse('2026-09-30T09:00:00+08:00');
 const HOUR = 3600_000;
 
-test('相遇结果双向结算关系：A→B 与 B→A 分开保存、来源幂等', () => {
+test('相遇结果双向结算关系：A→B 与 B→A 分开保存（重复结算由调用方契约保证）', () => {
   const rels = createTownRelationshipService({ db: getDb(), socialConfig: config.town.social });
   const applied = rels.applyMutualEffects({ worldId: W, actorIds: ['a1', 'a2'],
-    sourceKey: 'encounter:1', effects: { familiarity: 6, affection: 2 }, nowUtcMs: T0 });
+    effects: { familiarity: 6, affection: 2 }, nowUtcMs: T0 });
   assert.equal(applied, true);
   const aToB = rels.getRelationship(W, 'a1', 'a2');
   const bToA = rels.getRelationship(W, 'a2', 'a1');
   assert.equal(aToB.familiarity, 6);
   assert.equal(aToB.affection, 2);
   assert.deepEqual({ ...bToA }, { ...aToB }, '双向对称同量');
-  // 同一来源重复结算不生效
-  assert.equal(rels.applyMutualEffects({ worldId: W, actorIds: ['a1', 'a2'],
-    sourceKey: 'encounter:1', effects: { familiarity: 6, affection: 2 }, nowUtcMs: T0 }), false);
-  assert.equal(rels.getRelationship(W, 'a1', 'a2').familiarity, 6, '重复来源不叠加');
-  // 第二次来源继续增长
+  // 下一次相遇继续增长
   rels.applyMutualEffects({ worldId: W, actorIds: ['a1', 'a2'],
-    sourceKey: 'encounter:2', effects: { familiarity: 6, affection: 2 }, nowUtcMs: T0 + HOUR });
+    effects: { familiarity: 6, affection: 2 }, nowUtcMs: T0 + HOUR });
   assert.equal(rels.getRelationship(W, 'a1', 'a2').familiarity, 12);
   // 自身不结算
   assert.equal(rels.applyMutualEffects({ worldId: W, actorIds: ['a1', 'a1'],
-    sourceKey: 'encounter:3', effects: { familiarity: 6 }, nowUtcMs: T0 }), false);
+    effects: { familiarity: 6 }, nowUtcMs: T0 }), false);
 });
 
 test('每日熟悉度上限：重复来源超过上限当天不再生效，次日恢复', () => {
   const rels = createTownRelationshipService({ db: getDb(), socialConfig: { dailyFamiliarityCap: 3 } });
   for (let k = 1; k <= 4; k++) {
     rels.applyMutualEffects({ worldId: W, actorIds: ['b1', 'b2'],
-      sourceKey: `encounter:${k}`, effects: { familiarity: 6 }, nowUtcMs: T0 + k * 60_000 });
+      effects: { familiarity: 6 }, nowUtcMs: T0 + k * 60_000 });
   }
   assert.equal(rels.getRelationship(W, 'b1', 'b2').familiarity, 18, '上限 3 次 × 6 = 18，第 4 次被跳过');
   // 次日恢复生效
   rels.applyMutualEffects({ worldId: W, actorIds: ['b1', 'b2'],
-    sourceKey: 'encounter:5', effects: { familiarity: 6 }, nowUtcMs: T0 + 24 * HOUR });
+    effects: { familiarity: 6 }, nowUtcMs: T0 + 24 * HOUR });
   assert.equal(rels.getRelationship(W, 'b1', 'b2').familiarity, 24);
 });
 
@@ -59,7 +55,7 @@ test('关系数值有界；相遇倾向因子单调且夹紧', () => {
   const rels = createTownRelationshipService({ db: getDb(), socialConfig: config.town.social });
   for (let k = 0; k < 30; k++) {
     rels.applyMutualEffects({ worldId: W, actorIds: ['c1', 'c2'],
-      sourceKey: `encounter:${k}`, effects: { familiarity: 50, affection: 80 }, nowUtcMs: T0 + k * 60_000 });
+      effects: { familiarity: 50, affection: 80 }, nowUtcMs: T0 + k * 60_000 });
   }
   const rel = rels.getRelationship(W, 'c1', 'c2');
   assert.ok(rel.familiarity <= 100 && rel.affection <= 100, '关系数值不越界');
@@ -84,7 +80,7 @@ test('身份合并后关系落在存活身份上，不为退役身份复制新�
   const rels = createTownRelationshipService({ db: getDb(), socialConfig: config.town.social });
   const worldId = registry.getWorldState().worldId;
   rels.applyMutualEffects({ worldId, actorIds: [npcActor, 'other'],
-    sourceKey: 'encounter:pre', effects: { familiarity: 4 }, nowUtcMs: T0 });
+    effects: { familiarity: 4 }, nowUtcMs: T0 });
 
   // NPC 转正式角色：合并后 char 身份退役、NPC 身份存活
   registry.linkNpcCharacter(npcId, charId);
@@ -94,7 +90,7 @@ test('身份合并后关系落在存活身份上，不为退役身份复制新�
   const liveActor = registry.getActor(charActorBefore, worldId, { followMerged: false });
   assert.ok(liveActor.archived || liveActor.mergedInto, '旧 char 身份已退役');
   rels.applyMutualEffects({ worldId, actorIds: [charActorAfter, 'other'],
-    sourceKey: 'encounter:post', effects: { familiarity: 4 }, nowUtcMs: T0 + 1 });
+    effects: { familiarity: 4 }, nowUtcMs: T0 + 1 });
   const rowsForRetired = db.prepare(`SELECT count(*) n FROM town_actor_relationships
     WHERE world_id = ? AND from_actor_id = ?`).all(W, charActorBefore).length;
   const rowsForSurvivor = db.prepare(`SELECT count(*) n FROM town_actor_relationships
@@ -131,11 +127,11 @@ test('M3 集成：重复相遇积累熟悉度并受每日上限约束', async t 
   assert.ok(rel, '相遇应结算出有向关系行');
   assert.ok(rel.familiarity > 0, '熟悉度应随相遇增长');
   // 当日生效的关系来源 ≥ 1（按服务的 UTC 日窗口口径）
-  const dayStart = Math.floor(now / 86400000) * 86400000;
-  const sourcesToday = db.prepare(`SELECT count(DISTINCT source_key) n FROM town_relationship_effects
-    WHERE world_id = ? AND from_actor_id = ? AND to_actor_id = ? AND applied_at_utc_ms >= ?`)
-    .get(W_WORLD(sim), actorIds[0], actorIds[1], dayStart).n;
-  assert.ok(sourcesToday >= 1);
+  const day = Math.floor(now / 86400000);
+  const dailyCount = db.prepare(`SELECT count AS hits FROM town_relationship_effects
+    WHERE world_id = ? AND from_actor_id = ? AND to_actor_id = ? AND day = ?`)
+    .get(W_WORLD(sim), actorIds[0], actorIds[1], day)?.hits ?? 0;
+  assert.ok(dailyCount >= 1, '当日计数应记录相遇次数');
   // 次日继续相遇，熟悉度继续增长但每方向每日来源数不超过上限
   await stepDay();
   const rel2 = rels.getRelationship(W_WORLD(sim), actorIds[0], actorIds[1]);

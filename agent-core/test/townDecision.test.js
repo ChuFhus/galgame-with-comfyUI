@@ -159,19 +159,22 @@ test('M2 集成：饥饿居民自主前往饭馆进食并恢复饱食（零模�
     .run(JSON.stringify({ ...JSON.parse(row.needs_json), satiety: 30 }), actorId);
 
   // 推进至吃完（移动 + 20 分钟进食；60s 步长保证资源租约续期）
-  let eatEffects = 0;
+  let eatDone = 0;
   for (let i = 0; i < 30; i++) {
     await step();
-    eatEffects = db.prepare(`SELECT count(*) n FROM town_need_effects
-      WHERE actor_id = ? AND source_key LIKE 'life_eat:%'`).get(actorId).n;
-    if (eatEffects > 0) break;
+    eatDone = db.prepare(`SELECT count(*) n FROM town_actions
+      WHERE actor_id = ? AND type = 'life_eat' AND status = 'completed'`).get(actorId).n;
+    if (eatDone > 0) break;
   }
-  assert.ok(eatEffects > 0, '应完成 life_eat 动作并结算饱食恢复');
+  assert.ok(eatDone > 0, '应完成 life_eat 动作（结算直接落在需求值上）');
   const after = JSON.parse(db.prepare('SELECT needs_json FROM town_resident_needs WHERE actor_id = ?')
     .get(actorId).needs_json);
   assert.ok(after.satiety > 60, `饱食应从 30 恢复到 60 以上，实际 ${after.satiety}`);
-  // 只结算一次（同一动作来源幂等）
+  // 同一动作只结算一次：完成态动作行不增加、饱食不再额外跳升
+  const satietyBefore = JSON.parse(db.prepare('SELECT needs_json FROM town_resident_needs WHERE actor_id = ?').get(actorId).needs_json).satiety;
   for (let i = 0; i < 4; i++) await step();
-  assert.equal(db.prepare(`SELECT count(*) n FROM town_need_effects
-    WHERE actor_id = ? AND source_key LIKE 'life_eat:%'`).get(actorId).n, 1, '同一动作不重复结算');
+  assert.equal(db.prepare(`SELECT count(*) n FROM town_actions
+    WHERE actor_id = ? AND type = 'life_eat' AND status = 'completed'`).get(actorId).n, eatDone, '重复推进不产生新的结算来源');
+  const satietyAfter = JSON.parse(db.prepare('SELECT needs_json FROM town_resident_needs WHERE actor_id = ?').get(actorId).needs_json).satiety;
+  assert.ok(satietyAfter <= satietyBefore + 1, '没有重复的饱食恢复（只有自然衰减）');
 });

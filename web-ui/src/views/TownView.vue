@@ -48,6 +48,7 @@ v-if="latestActivity && initialized" :key="latestActivity.seq" class="town-activ
             <time>{{ formatActivityTime(item.occurredAt) }}</time>
             <span class="tap-name">{{ item.name }}</span>
             <span class="tap-text">{{ item.text }}</span>
+            <span v-if="item.reason" class="tap-reason">{{ item.reason }}</span>
           </li>
         </ul>
       </div>
@@ -2346,6 +2347,10 @@ async function startTravel() {
 .tap-list time { flex: none; color: var(--text-secondary, #9a8a78); font-size: 11px; }
 .tap-name { flex: none; font-weight: 600; color: var(--text-primary); }
 .tap-text { color: var(--text-primary); opacity: .85; }
+.tap-reason {
+  flex: none; margin-left: auto; padding: 1px 6px; border-radius: 999px; font-size: 10px;
+  color: #a1846e; border: 1px solid rgba(161, 132, 110, .4); background: rgba(255, 251, 243, .7);
+}
 
 /* ── 进入世界时的资源就绪遮罩 ── */
 .town-boot-mask {

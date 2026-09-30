@@ -877,13 +877,44 @@ choices 必须与输入允许展示的选项一一对应；没有选项时输出
 `app.js` 启动时的按比例 VACUUM 归还（删完重启一次后端即可）。
 
 **本次新增的持久化对象**（全部 `CREATE TABLE IF NOT EXISTS` / 幂等加列，可重复迁移）：
-`town_resident_profiles`、`town_resident_needs`、`town_need_effects`、`town_mood_influences`、
-`town_actor_relationships`、`town_relationship_effects`、`town_resident_goals`、
-`town_resident_goal_cursor`、`town_resident_skills`、`town_director_candidates`，
-以及 `town_encounters` 新增列 `outcome_json` / `polished_summary`。
+`town_resident_profiles`、`town_resident_needs`、`town_actor_relationships`、
+`town_relationship_effects`、`town_resident_goals`、`town_resident_skills`、
+`town_director_candidates`，以及 `town_encounters` 新增列 `outcome_json` / `polished_summary`。
 旧存档无需重新生成人格或形象；旧行空列走兼容路径，历史文本不被批量改写。
 
 功能关闭不删除新存档，也不回滚已经合法结算的交易。代码回退前要确认旧版本能读取新增数据；必要时使用升级前备份恢复，不能直接删除新表假装完成回滚。
+
+#### 记录模型精简（2026-09-30 第二轮）
+
+第一版按「一次状态流转 = 一条审计」设计，实测**一行动作派生约 3 行数据**（活动流水 + 领域事件 + 幂等台账），
+某镇日增上万行、库到 10GB，而其中绝大多数没有读者。第二轮的判断口径是：**先问"谁读这条数据"，
+没有读者的字段/表一律不写**。落点如下：
+
+| 原设计 | 现状 | 读者 |
+| --- | --- | --- |
+| `town_activity_log`（每次流转一行） | **删表** | 无（改由动作行自带理由） |
+| `town_domain_events` 的 `town.action.changed` | **不再产生**；存量一次扫净 | 无 |
+| `town_action_requests`（模拟命令也写） | 只为显式传 `idempotencyKey` 的调用方保留 | 重放保护 |
+| `town_need_effects`（来源幂等） | **删表** | 无（效果直接在结算事务内写需求） |
+| `town_mood_influences`（心情影响项） | **删表** | 无（心情 = 需求基线） |
+| `town_resident_goal_cursor`（目标轮换游标） | **删表** | 无（按当天确定性重放） |
+| `town_relationship_effects`（每次结算一行） | **改为当日计数行**（`world,from,to,day` 主键，`count`） | 每日上限 |
+| `image_prompt_preparations`（生图提示词快照，113MB / 占库 68%） | **删表**，同时删写入路径 | 无 |
+
+理由落在 `town_actions.last_reason`（失败原因 → `failure_reason`，其次 `rule_key` 规则来源）。
+量级回到设计目标：**约 100 条动作 / 人 / 天**（实测 25 名居民 1400—2000 行/天，取消行从改造前的
+2810 行/天降到 10 行/天）。
+
+**保留期**（`purgeTownActionHistory` 内，随既有 5 分钟维护周期跑，`rowid` 游标线性推进）：
+终态动作 7 天、导演候选 7 天、`town_encounters` 30 天、`town_domain_events` 30 天
+（排除仍被经历引用或有未结投递的事件）、终态 `town_event_deliveries` 即时删；
+停产类型 `town.action.changed` 不看年龄一次扫净。`app.js` 启动时还会清空
+`image_tasks` 中超 30 天行的提示词文本（行与图片保留，`IMAGE_TASK_TEXT_RETENTION_DAYS=0` 关闭）。
+
+**升级即自愈**：上述删除全部写在幂等迁移里（`DROP TABLE IF EXISTS` 风格的守卫判断 + 建表语句移除），
+`app.js` 启动时按「空闲页 > 25% 且文件 > 100MB」触发 VACUUM。已升级用户的实库实测：
+`town_activity_log` / `image_prompt_preparations` 随重启消失、18,459 条停产事件被回收，
+库 94.6MB → 67.0MB（`integrity_check` ok）。
 
 ### 10.3 发布步骤
 
@@ -904,14 +935,14 @@ choices 必须与输入允许展示的选项一一对应；没有选项时输出
 - [x] **T01：事实结算与相遇解耦。** 增加规则相遇结果和模板摘要；扩展经历来源校验；后台普通社交不受演出门控限制。（2026-09-30 实施：`townEncounterOutcome.js` 规则结算 + `town_encounters.outcome_json/polished_summary` + 经历消费双形态校验；相遇扫描改为全图运行，对话/润色/奇遇/气泡仍按聚焦图 + 自动 LLM 门控）
 - [x] **T02：模拟时钟与恢复底座。** 统一输入时钟、随机域、检查点、保守恢复；建立零模型测试场景。（2026-09-30 实施：相遇判定改确定性随机域；`forceTick(nowMs)` 支持注入虚拟时钟；决策序号/游标沿用 `town_simulation_state`；`closeStaleEncounters` 升级为保守结算恢复；无界面入口 `townHeadlessSim.js`；测试 `townEncounterOutcome.test.js`、`townEncounterSettlement.test.js`）
 - [x] **T03：居民需求与性格档案。** 六类需求、少量性格参数、情绪适配、默认值与迁移。（2026-09-30 实施：`townNeedsService.js` 六类满足度按逻辑时间结算（游标持久化、离线 12h 温和截断）；性格档案确定性派生（manual 档案不覆盖）、外向修正社交衰减与相遇倾向（`pairEncounterFactor`）；完成 rest 动作恢复精力、相遇按结果代码恢复社交；心情影响项去重/过期/边际递减/活跃上限；测试 `townNeeds.test.js`）
-- [x] **T04：候选评分与场所动作。** 接入生活动作、合法性筛选、解释信息、容量占用与中断恢复。（2026-09-30 实施：`townDecisionService.js` 分段线性评分 + 滞回带 + 近分确定性平局挑选 + 候选分数诊断；`townAffordanceService.js` 场所供给只认显式配置；life_eat/life_read/life_sit 动作接入模拟桥规则（优先级介于作息与 wait 之间）；客满排除与改选；相遇打断生活计划；目标连续不可达自动放弃；完成效果结算恢复需求（`town_need_effects` 来源幂等）；测试 `townDecision.test.js`）
+- [x] **T04：候选评分与场所动作。** 接入生活动作、合法性筛选、解释信息、容量占用与中断恢复。（2026-09-30 实施：`townDecisionService.js` 分段线性评分 + 滞回带 + 近分确定性平局挑选 + 候选分数诊断；`townAffordanceService.js` 场所供给只认显式配置；life_eat/life_read/life_sit 动作接入模拟桥规则（优先级介于作息与 wait 之间）；客满排除与改选；相遇打断生活计划；目标连续不可达自动放弃；完成效果结算恢复需求（`town_need_effects` 来源幂等——该表已在同日「记录模型精简」中删除，改为结算事务内直接写需求）；测试 `townDecision.test.js`）
 - [x] **T05：有向关系与普通社交。** 关系结算、对象选择、共同活动、知情范围和收益递减。（2026-09-30 实施：`townRelationshipService.js` 有向关系（熟悉/好感/信任/矛盾，A→B 与 B→A 分存）；相遇结果双向结算，来源幂等 + 每对每日熟悉度来源上限；`relationshipEncounterFactor` 把熟悉/好感反馈进相遇概率；只对在册活身份结算，合并后落在存活身份不为退役身份复制；知情范围沿用经历事件的 participants 可见性；测试 `townSocial.test.js`）
 - [x] **T06：基础经营闭环。** 审计现有钱物流向，接入营业账户、配方、消费、工资与规则补货。（2026-09-30 实施：`townBusinessService.js`——经营账户（venue:map:key）一次性启动资金 seed；work_shift 完成后经营账户发工资（`wage:{actionId}` 幂等、余额不足不增发）；life_eat 付餐费进经营账户 + 预留/核销消耗餐食库存（两段各自幂等），余额不足走免费公共餐食；库存低于阈值向外部供应商采购（小时桶来源键、外部到货按日 seedStock 来源明确）；复式账本守恒由 economyService 保证；测试 `townBusiness.test.js`）
 - [x] **T07：稳定性与有限补算。** 验证缺货、缺钱、缺人、离线恢复和有限救助，完成最小版本验收。（2026-09-30 实施：`townStability.test.js` 缺钱+缺货叠加（免费公共餐食兜底、账本不增发）与离线三天恢复（需求 12h 温和截断、相遇不重复结算）；`townSevenDay.test.js` 七天基础场景（env 门控 `TOWN_LONG_SIM=1`，三条闭环 + 账本守恒 + 数值有界）；修复岗位居民被闲逛劫持的既有潜伏 bug（明确岗位 work 钉在工作地点，经营依赖人在岗）。有限规则补算（M4 后的 6h 快进）保持保守恢复口径，未实现快进）
 - [x] **T08：目标、技能与习惯。** 规则目标目录、进展消费、受阻处理、跨日习惯与有界技能收益。（2026-09-30 实施：`townGoalService.js` 目标目录（职业/攒钱/社交/阅读兴趣/料理兴趣）三槽位（1 主 + 2 愿望）按本地日挑选（游标防重选、确定性哈希）；进度只从已结算事实消费（work/read/eat/social/wage 钩子，来源键幂等）；完成即冻结进度、次日换新目标、条件失效标 blocked；技能/习惯每日收益上限 + 边际递减（等级 0-100）；`getDecisionBias` 把兴趣目标与习惯等级接进生活动作评分；十四天场景验证进展可观察（`townSevenDay.test.js` 扩展））
 - [x] **T09：规则事件导演。** 候选去重、节奏控制、玩家邀请、居民自行处理和现有奇遇后果接入。（2026-09-30 实施：`townDirectorService.js` + `town_director_candidates`——候选只能从已结算事实建立（餐食见底/目标达成/关系里程碑），repeat_key 按天分桶幂等；importance 排序、每日邀请上限 3 条 + 90 分钟恢复期；候选 24h 有效期，条件消失自动「自行处理」、过期自动关闭、零惩罚；邀请复用镇民 ambient 奇遇管线（聚焦图 + 自动 LLM + 事件系统开启时），零模型下候选保持 open 并自然过期；测试 `townDirector.test.js`）
 - [x] **T10：关键叙事增强。** 事实快照、JSON 契约、选项身份校验、缓存、预算、失效处理与模板回退。（2026-09-30 实施：`townNarrativeService.js`——提示词骨架逐字取自 §6.8，来源事件以调用方入参为权威；解析器拒绝额外字段/错误身份/未知或重复选项/超长文本/来源不匹配，违规即模板回退；缓存键=来源+事实版本+参与者+模板版本（重复打开不重新生成）；自动叙事每镇每日预算 3 次（手动触发不计），失败最多重试 2 次后模板回退；模板只用调用方给的事实文本，不编造新事实；叙事永远不进入数值结算。测试 `townNarrative.test.js`；UI 消费面随 T11 后续接入）
-- [x] **T11：玩家反馈与发布。** 地图状态、对话舞台、奇遇反馈、主题与移动端检查、迁移和开关文档。（2026-09-30 全部完成：`getTownState.lifeVenues` 场所状态 + TownView 地图徽标消费（经营场所上方暖纸墨色胶囊：`名称 · 营业中/座位 n/m/客满/缺货`，语义状态色不随主题，`prefers-reduced-motion` 时跳过渐入）；生活动作活动文案经既有 activityText 链路进地图；对话舞台/奇遇页沿用既有组件未改视觉。浏览器逐项核验（隔离实例 + 零模型 + headless 预置镇）：桌面暖色、暗夜主题、移动端 390×844、状态切换 0.3s 渐入中间帧（pinia 快照翻转 → 下一绘制帧生效）均通过；快照刷新节奏沿用既有 60s 去抖。**补充（居民动态与状态）**：`townActivityFeed.js` 把 `town_activity_log` 流转翻译成可读文案（只读、噪音过滤：wait/cancelled/睡觉分段不进信息流；同居民同文案 10 分钟内连续重复折叠降噪）；`GET /town/activity`、`GET /town/actors/:id/activity`、`GET /town/actors/:id/status` 三个只读接口；对话框标题区左侧展示当前状态胶囊（与「小镇 · 相谈」同一行、完整显示不省略不截断；面板因此由 540px 加宽到 620px），「状态」按钮打开独立弹窗（LinsheModal）展示需求六项/心情/目标/技能习惯/最近来往——不挤占对话框正文，「动态」页签给最近 100 条行动记录；世界页左上角浮窗滚动最新 NPC 动态（0.3s 渐入渐出），点开查看全镇流水并可刷新。**工作接线**：在岗判定改以结构化字段 `town_npcs.workplace_key` 为权威——作息段地点等于绑定岗位、或为同类经营场所（LLM 作息常指同类另一家分店）即判在岗，岗位居民真正上工并发薪。**前端合成足迹**：随机游走是纯显示、不落库（见上），居民最频繁的可见行为会因此缺少"路线感"——前端 `town/wanderTrail.js` 只按快照里「已到站地点」的变化，在浏览器内存里合成「在X闲逛」，与后端行动记录按时间合并展示并标「足迹」小标签、注明不写入存档；刷新即丢，后端零痕迹。
+- [x] **T11：玩家反馈与发布。** 地图状态、对话舞台、奇遇反馈、主题与移动端检查、迁移和开关文档。（2026-09-30 全部完成：`getTownState.lifeVenues` 场所状态 + TownView 地图徽标消费（经营场所上方暖纸墨色胶囊：`名称 · 营业中/座位 n/m/客满/缺货`，语义状态色不随主题，`prefers-reduced-motion` 时跳过渐入）；生活动作活动文案经既有 activityText 链路进地图；对话舞台/奇遇页沿用既有组件未改视觉。浏览器逐项核验（隔离实例 + 零模型 + headless 预置镇）：桌面暖色、暗夜主题、移动端 390×844、状态切换 0.3s 渐入中间帧（pinia 快照翻转 → 下一绘制帧生效）均通过；快照刷新节奏沿用既有 60s 去抖。**补充（居民动态与状态，2026-09-30 精简版）**：**一次动作 = 一条动态**——信息流直读 `town_actions`（动作行自带状态、`last_reason` 理由、规则来源），`town_activity_log` 已删表、不再为动作发领域事件、模拟命令也不再写幂等台账（`town_action_requests` 仅对显式传 `idempotencyKey` 的调用方生效）；一行动作只落 1 行，量级与居民真实活动一致（约百条/人/天）。「理由」由 `last_reason`（作息变了／路走不通／做完了…）与 `rule_key`（作息·上班／需求·吃饭…）给出；同居民同文案 1 小时内连续重复折叠（上班/休息被切成 15 分钟一段时不会刷屏）；取消态不展示；`GET /town/activity`、`GET /town/actors/:id/activity`、`GET /town/actors/:id/status` 三个只读接口；对话框标题区左侧展示当前状态胶囊（与「小镇 · 相谈」同一行、完整显示不省略不截断；面板因此由 540px 加宽到 620px），「状态」按钮打开独立弹窗（LinsheModal）展示需求六项/心情/目标/技能习惯/最近来往——不挤占对话框正文，「动态」页签给最近 100 条行动记录；世界页左上角浮窗滚动最新 NPC 动态（0.3s 渐入渐出），点开查看全镇流水并可刷新。**工作接线**：在岗判定改以结构化字段 `town_npcs.workplace_key` 为权威——作息段地点等于绑定岗位、或为同类经营场所（LLM 作息常指同类另一家分店）即判在岗，岗位居民真正上工并发薪。**前端合成足迹**：随机游走是纯显示、不落库（见上），居民最频繁的可见行为会因此缺少"路线感"——前端 `town/wanderTrail.js` 只按快照里「已到站地点」的变化，在浏览器内存里合成「在X闲逛」，与后端行动记录按时间合并展示并标「足迹」小标签、注明不写入存档；刷新即丢，后端零痕迹。
 **存档维护**：`scripts/townChurnCleanup.mjs` 清理旧游走抖动产生的取消动作/日志/事件/孤儿事件（实测某镇累计 190 万行，占动作总量 92%；支持 `--types` 覆盖 move_to/wait），rowid 游标线性推进，默认 dry-run。迁移与开关清单见 §10.4）
 
 T11 中必要的状态反馈可以随每个阶段交付，不应等所有后台开发结束才验证玩家能否理解行为。T01—T07 构成第一批完整交付范围。

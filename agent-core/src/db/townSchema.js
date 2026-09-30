@@ -87,24 +87,6 @@ export function migrateTownSchema(db) {
         version INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (world_id, actor_id)
       );
-      CREATE TABLE IF NOT EXISTS town_need_effects (
-        world_id TEXT NOT NULL,
-        actor_id TEXT NOT NULL,
-        source_key TEXT NOT NULL,
-        effects_json TEXT NOT NULL,
-        applied_at_utc_ms INTEGER NOT NULL,
-        PRIMARY KEY (world_id, actor_id, source_key)
-      );
-      CREATE TABLE IF NOT EXISTS town_mood_influences (
-        world_id TEXT NOT NULL,
-        actor_id TEXT NOT NULL,
-        source_key TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        intensity REAL NOT NULL CHECK (intensity >= -1 AND intensity <= 1),
-        created_at_utc_ms INTEGER NOT NULL,
-        expires_at_utc_ms INTEGER NOT NULL,
-        PRIMARY KEY (world_id, actor_id, source_key)
-      );
       -- M3 有向关系：A 对 B 与 B 对 A 分开保存；合并/退役身份不写新行（历史行保留）
       CREATE TABLE IF NOT EXISTS town_actor_relationships (
         world_id TEXT NOT NULL,
@@ -118,15 +100,15 @@ export function migrateTownSchema(db) {
         updated_at_utc_ms INTEGER,
         PRIMARY KEY (world_id, from_actor_id, to_actor_id)
       );
-      -- 关系效果来源（幂等：同一来源同一方向只结算一次；按行计今日次数实现每日上限）
+      -- 关系每日计数：一行 = (一对居民, 一天)，用于熟悉度每日上限（行数天然有界）
       CREATE TABLE IF NOT EXISTS town_relationship_effects (
         world_id TEXT NOT NULL,
         from_actor_id TEXT NOT NULL,
         to_actor_id TEXT NOT NULL,
-        source_key TEXT NOT NULL,
-        effects_json TEXT NOT NULL,
-        applied_at_utc_ms INTEGER NOT NULL,
-        PRIMARY KEY (world_id, from_actor_id, to_actor_id, source_key)
+        day INTEGER NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        updated_at_utc_ms INTEGER,
+        PRIMARY KEY (world_id, from_actor_id, to_actor_id, day)
       );
       -- M5 目标：每居民 1 个主目标（slot 0）+ 2 个近期愿望（slot 1/2）；进度从已结算事实消费
       CREATE TABLE IF NOT EXISTS town_resident_goals (
@@ -141,13 +123,6 @@ export function migrateTownSchema(db) {
         created_utc_ms INTEGER NOT NULL,
         updated_utc_ms INTEGER,
         PRIMARY KEY (world_id, actor_id, slot)
-      );
-      -- 目标挑选游标（按本地日挑选，不逐 tick 重选）
-      CREATE TABLE IF NOT EXISTS town_resident_goal_cursor (
-        world_id TEXT NOT NULL,
-        actor_id TEXT NOT NULL,
-        last_pick_day INTEGER NOT NULL,
-        PRIMARY KEY (world_id, actor_id)
       );
       -- M5 技能与习惯：来自有效行为，每日收益有上限；kind=skill 影响效率，habit 只加倾向
       CREATE TABLE IF NOT EXISTS town_resident_skills (
@@ -176,6 +151,28 @@ export function migrateTownSchema(db) {
         PRIMARY KEY (world_id, repeat_key)
       );
     `);
+    // 精简（2026-09-30）：三张"每件事一行/空转"的表删除；关系效果表改为每日计数
+    for (const [table, why] of [
+      ['town_need_effects', '每动作一行的结算台账，全项目无读者（结算改由调用契约保证）'],
+      ['town_mood_influences', '心情影响项无生产者（零模型下没有愉快交谈），空转机制'],
+      ['town_resident_goal_cursor', '只存"上次挑选的日号"的表，改为读目标行自身的日期'],
+    ]) {
+      const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);
+      if (!exists) continue;
+      const before = db.prepare(`SELECT count(*) n FROM ${table}`).get().n;
+      db.exec(`DROP TABLE ${table}`);
+      console.log(`[db] 已删除 ${table}（${before} 行：${why}）`);
+    }
+    const relCols = db.prepare('PRAGMA table_info(town_relationship_effects)').all().map(c => c.name);
+    if (relCols.length && !relCols.includes('day')) {
+      const before = db.prepare('SELECT count(*) n FROM town_relationship_effects').get().n;
+      db.exec(`DROP TABLE town_relationship_effects`);
+      db.exec(`CREATE TABLE town_relationship_effects (
+        world_id TEXT NOT NULL, from_actor_id TEXT NOT NULL, to_actor_id TEXT NOT NULL,
+        day INTEGER NOT NULL, count INTEGER NOT NULL DEFAULT 0, updated_at_utc_ms INTEGER,
+        PRIMARY KEY (world_id, from_actor_id, to_actor_id, day))`);
+      console.log(`[db] town_relationship_effects 重建为每日计数表（原 ${before} 行明细已废弃；关系本体在 town_actor_relationships）`);
+    }
     const registry = createTownActorRegistry(db);
     registry.synchronize();
     db.prepare('UPDATE town_world_state SET schema_version = ? WHERE singleton = 1').run(TOWN_SCHEMA_VERSION);

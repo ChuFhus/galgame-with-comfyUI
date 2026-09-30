@@ -178,6 +178,27 @@ console.log('[db] SQLite initialized');
 // 成本），把磁盘空间真正归还；刚清理过的库空闲占比为 0 会直接跳过。失败（如磁盘不足）
 // 仅告警，不阻断启动。DB_AUTO_VACUUM=0 可关闭。
 compactDatabaseIfFragmented();
+trimImageTaskHistory();
+
+/**
+ * 生图任务历史瘦身：老任务的提示词文本（prompt_original/prompt_refined/workflow_template，
+ * 每行合计约 1.5KB）对最近查询没有意义，但行本身被相册与聊天图片归因引用，不能删——
+ * 因此只清空重文本字段，保留 id/status/output_paths/created_at（图片文件与引用都不动）。
+ */
+function trimImageTaskHistory() {
+  try {
+    if (process.env.IMAGE_TASK_TEXT_RETENTION_DAYS === '0') return;
+    const db = getDb();
+    const days = Math.max(1, parseInt(process.env.IMAGE_TASK_TEXT_RETENTION_DAYS ?? '30', 10) || 30);
+    const cutoff = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 19).replace('T', ' ');
+    const trimmed = db.prepare(`UPDATE image_tasks SET prompt_original = '', prompt_refined = NULL, workflow_template = NULL
+      WHERE created_at < ? AND status IN ('done','failed')
+        AND (prompt_original != '' OR prompt_refined IS NOT NULL OR workflow_template IS NOT NULL)`).run(cutoff).changes;
+    if (trimmed > 0) console.log(`[db] 生图任务历史瘦身：清空 ${trimmed} 行（>${days} 天）的提示词文本，行与图片保留`);
+  } catch (err) {
+    console.warn('[db] 生图任务历史瘦身跳过（不影响启动）:', err?.message || err);
+  }
+}
 
 function compactDatabaseIfFragmented() {
   try {

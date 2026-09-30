@@ -285,19 +285,16 @@ const TOWN_ACTION_PURGE_MAX_ROWS = 400_000;    // 单次运行行数预算（大
 const TOWN_ACTION_PURGE_INTERVAL_MS = 5 * 60_000;
 
 /**
- * 分批清理 7 天前的终态动作行及其 activity_log 子行。主键分页单遍扫描（终止条件：
- * 扫完表或触及预算），批间 setImmediate 让路；不自动 VACUUM——删除只标记空闲页，
- * 归还磁盘需停服手动执行。
- * 注意：town_actions 被 town_activity_log/town_resource_claims/town_production_proofs
- * 以 FK 引用，且 foreign_keys=ON——必须先删子表行再删父行；activity_log(action_id)
- * 的索引是删除可行性的前提（无索引时每删一行都是百万级全表扫描）。
+ * 分批清理 7 天前的终态动作行（主键分页单遍扫描，终止条件：扫完表或触及预算），
+ * 批间 setImmediate 让路；不自动 VACUUM——删除只标记空闲页，归还磁盘需停服手动执行。
+ * 注意：town_actions 被 town_resource_claims/town_production_proofs 以 FK 引用，
+ * foreign_keys=ON——子表行须先消失，否则删父行报错（两者的清理在各自生命周期内完成）。
  */
 export async function purgeTownActionHistory({ nowMs = Date.now(), budgetMs = TOWN_ACTION_PURGE_BUDGET_MS,
   maxRows = TOWN_ACTION_PURGE_MAX_ROWS } = {}) {
   const db = getDb();
   const cutoff = nowMs - TOWN_ACTION_RETENTION_MS;
   const page = db.prepare('SELECT id, status, updated_at FROM town_actions WHERE id > ? ORDER BY id LIMIT ?');
-  const delChildren = ids => db.prepare(`DELETE FROM town_activity_log WHERE action_id IN (${ids.map(() => '?').join(',')})`).run(...ids);
   const delParents = ids => db.prepare(`DELETE FROM town_actions WHERE id IN (${ids.map(() => '?').join(',')})`).run(...ids);
   const startedAt = Date.now();
   let cursor = '', deleted = 0, scanned = 0;
@@ -309,7 +306,7 @@ export async function purgeTownActionHistory({ nowMs = Date.now(), budgetMs = TO
     const stale = rows.filter(r => r.updated_at < cutoff
       && (r.status === 'completed' || r.status === 'cancelled' || r.status === 'failed')).map(r => r.id);
     if (stale.length) {
-      db.transaction(() => { delChildren(stale); delParents(stale); })();
+      db.transaction(() => { delParents(stale); })();
       deleted += stale.length;
     }
     if (deleted >= maxRows || Date.now() - startedAt >= budgetMs) break;
@@ -328,7 +325,63 @@ export async function purgeTownActionHistory({ nowMs = Date.now(), budgetMs = TO
     if (shared.purgeLogState.reqDone && shared.purgeLogState.evtDone) shared.purgedLogEpoch = currentEpoch;
   }
   db.prepare('DELETE FROM town_action_requests WHERE created_at IS NOT NULL AND created_at < ?').run(cutoff);
+  await purgeEcosystemHistory(db, nowMs, budgetMs);
   return { deleted, scanned };
+}
+
+/**
+ * 生态历史保留期（2026-09-30 补齐"有意义但无界增长"的四张表）：
+ *   town_director_candidates  7 天（候选只对当日节奏有意义，过期即无价值）
+ *   town_encounters           30 天（冷却重建只需小时级；摘要快照已在事件/经历里）
+ *   town_event_deliveries     终态（done/dead）即删——投递状态对历史没有意义
+ *   town_domain_events        30 天，且排除仍被经历引用或有未结投递的事件
+ *   另：停产类型 town.action.changed 不看年龄一次扫净（动作理由已改记在 town_actions.last_reason）
+ * 全部按 rowid 游标单遍推进（不做 LIMIT 子查询重扫），批间让路事件循环。
+ */
+async function purgeEcosystemHistory(db, nowMs, budgetMs) {
+  const t0 = Date.now();
+  const sweep = (selectSql, deleteSql, args = []) => {
+    let cursor = 0, removed = 0;
+    for (;;) {
+      const ids = db.prepare(selectSql).all(...args, cursor, TOWN_ACTION_PURGE_BATCH).map(row => row.rid);
+      if (ids.length === 0) break;
+      cursor = ids[ids.length - 1];
+      removed += db.prepare(`${deleteSql} WHERE rowid IN (${ids.map(() => '?').join(',')})`).run(...ids).changes;
+      if (Date.now() - t0 > budgetMs) break;
+    }
+    return removed;
+  };
+  const candidates = sweep(
+    `SELECT rowid AS rid FROM town_director_candidates WHERE created_utc_ms < ? AND rowid > ? ORDER BY rowid LIMIT ?`,
+    'DELETE FROM town_director_candidates', [nowMs - 7 * 86400_000]);
+  const encounters = sweep(
+    `SELECT rowid AS rid FROM town_encounters WHERE COALESCE(ended_at, created_at) < ? AND rowid > ? ORDER BY rowid LIMIT ?`,
+    'DELETE FROM town_encounters', [new Date(nowMs - 30 * 86400_000).toISOString().slice(0, 19).replace('T', ' ')]);
+  const deliveries = sweep(
+    `SELECT rowid AS rid FROM town_event_deliveries WHERE status IN ('done','dead') AND rowid > ? ORDER BY rowid LIMIT ?`,
+    'DELETE FROM town_event_deliveries');
+  const events = sweep(
+    `SELECT e.rowid AS rid FROM town_domain_events e
+     WHERE CAST(json_extract(e.envelope, '$.occurredAt') AS INTEGER) < ? AND e.rowid > ?
+       AND NOT EXISTS (SELECT 1 FROM town_experiences x WHERE x.event_id = e.event_id)
+       AND NOT EXISTS (SELECT 1 FROM town_event_deliveries d WHERE d.event_id = e.event_id
+         AND d.status IN ('pending','processing'))
+     ORDER BY e.rowid LIMIT ?`,
+    'DELETE FROM town_domain_events', [nowMs - 30 * 86400_000]);
+  // 停产事件类型：动作生命周期已不再落事件（理由直接记在 town_actions.last_reason，动态流读动作行），
+  // 所以 town.action.changed 是纯残留——不看年龄，一次扫净，升级用户的积压随首次清理消失。
+  // 仍保留引用守卫：被经历引用的事件是记忆凭证，绝不删。须排在 deliveries 清扫之后（否则 FK 报错）。
+  const retired = sweep(
+    `SELECT e.rowid AS rid FROM town_domain_events e
+     WHERE e.type = 'town.action.changed' AND e.rowid > ?
+       AND NOT EXISTS (SELECT 1 FROM town_experiences x WHERE x.event_id = e.event_id)
+       AND NOT EXISTS (SELECT 1 FROM town_event_deliveries d WHERE d.event_id = e.event_id)
+     ORDER BY e.rowid LIMIT ?`,
+    'DELETE FROM town_domain_events');
+  const removed = candidates + encounters + deliveries + events + retired;
+  if (removed > 0) {
+    console.log(`[town] ecosystem history purged: candidates=${candidates} encounters=${encounters} deliveries=${deliveries} events=${events} retired=${retired}`);
+  }
 }
 
 /**
@@ -362,9 +415,6 @@ async function purgeEpochLogs(db, currentEpoch, budgetMs) {
       const rids = rows.map(r => r.rowid).join(',');
       db.transaction(() => {
         db.prepare(`DELETE FROM town_event_deliveries WHERE event_id IN
-          (SELECT event_id FROM town_domain_events WHERE rowid IN (${rids}))`).run();
-        // activity_log.event_id 同样 FK 指向 domain_events（纯写入审计，无读者）
-        db.prepare(`DELETE FROM town_activity_log WHERE event_id IN
           (SELECT event_id FROM town_domain_events WHERE rowid IN (${rids}))`).run();
         db.prepare(`DELETE FROM town_domain_events WHERE rowid IN (${rids})`).run();
       })();
@@ -928,7 +978,7 @@ function settleActionNeedEffects(results, nowUtcMs = null) {
       if (effects && sourceKey) {
         try {
           needs.applyNeedEffects({ worldId: world.worldId, actorId: result.actorId,
-            sourceKey, effects, nowUtcMs: appliedAt });
+            effects, nowUtcMs: appliedAt });
         } catch (err) {
           console.warn('[town] action need recovery failed:', err?.message || err);
         }
@@ -1676,13 +1726,8 @@ function applyEncounterNeedEffects(worldId, actorIds, encounterId, outcome, nowU
   for (const actorId of actorIds) {
     try {
       if (social > 0) {
-        needs.applyNeedEffects({ worldId, actorId, sourceKey: `encounter:${encounterId}`,
-          effects: { social }, nowUtcMs });
-      }
-      if (social > 0 && (outcome.resultCode === 'chat' || outcome.resultCode === 'brief_chat')) {
-        needs.addMoodInfluence({ worldId, actorId, sourceKey: `encounter:${encounterId}`,
-          kind: 'pleasant_chat', intensity: config.town.needs.influence.chatIntensity,
-          nowUtcMs, ttlMs: config.town.needs.influence.chatTtlMs });
+        // 同一相遇只结算一次由调用方保证（结算事务 + 事件存在性检查），不需要来源台账
+        needs.applyNeedEffects({ worldId, actorId, effects: { social }, nowUtcMs });
       }
     } catch (err) {
       console.warn('[town] encounter need effects failed:', err?.message || err);
@@ -1696,8 +1741,7 @@ function applyEncounterNeedEffects(worldId, actorIds, encounterId, outcome, nowU
   };
   if (relEffects.familiarity > 0 || relEffects.affection > 0) {
     try {
-      townRelationships().applyMutualEffects({ worldId, actorIds,
-        sourceKey: `encounter:${encounterId}`, effects: relEffects, nowUtcMs });
+      townRelationships().applyMutualEffects({ worldId, actorIds, effects: relEffects, nowUtcMs });
     } catch (err) {
       console.warn('[town] encounter relationship effects failed:', err?.message || err);
     }

@@ -6,9 +6,13 @@
  * 影响项参数集中由 config.town.needs 提供。性格档案由本地规则派生（确定性哈希），
  * 不从人格文本逐 tick 推测；manual 来源的档案永不自动改写。
  *
- * 数据归属（同世界持续保存，换地图不重置）：town_resident_profiles /
- * town_resident_needs / town_need_effects（恢复效果来源，保证只生效一次）/
- * town_mood_influences（心情影响项，去重 + 过期 + 边际递减）。
+ * 数据归属（同世界持续保存，换地图不重置）：只有 town_resident_profiles（性格/兴趣）
+ * 与 town_resident_needs（六类满足度 + 结算游标）两张表。
+ *
+ * 精简（2026-09-30）：删掉两张"每件事一行"的表——
+ *   town_need_effects：只用来判断"这个来源是否已结算"，全项目无读者，内容与动作行重复；
+ *     改为契约式保证：一次结算只由调用方触发一次（动作终态唯一、相遇结算在单事务内）。
+ *   town_mood_influences：当前没有生产者（只有"愉快交谈"会写，零模型下不发生），空转机制。
  */
 import { createHash } from 'node:crypto';
 
@@ -100,24 +104,6 @@ export function createTownNeedsService({ db, needsConfig }) {
     bumpEffects: db.prepare(`UPDATE town_resident_needs
       SET needs_json = ?, version = version + 1 WHERE world_id = ? AND actor_id = ?`),
   };
-  const effectStmts = {
-    insert: db.prepare(`INSERT OR IGNORE INTO town_need_effects
-      (world_id, actor_id, source_key, effects_json, applied_at_utc_ms) VALUES (?, ?, ?, ?, ?)`),
-  };
-  const influenceStmts = {
-    get: db.prepare('SELECT * FROM town_mood_influences WHERE world_id = ? AND actor_id = ? AND source_key = ?'),
-    insert: db.prepare(`INSERT OR IGNORE INTO town_mood_influences
-      (world_id, actor_id, source_key, kind, intensity, created_at_utc_ms, expires_at_utc_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`),
-    listActive: db.prepare(`SELECT * FROM town_mood_influences WHERE world_id = ? AND actor_id = ?
-      AND expires_at_utc_ms > ? ORDER BY created_at_utc_ms`),
-    countActive: db.prepare(`SELECT count(*) n FROM town_mood_influences WHERE world_id = ? AND actor_id = ?
-      AND expires_at_utc_ms > ?`),
-    deleteOldest: db.prepare(`DELETE FROM town_mood_influences WHERE world_id = ? AND actor_id = ? AND source_key = (
-      SELECT source_key FROM town_mood_influences WHERE world_id = ? AND actor_id = ? AND expires_at_utc_ms > ?
-      ORDER BY created_at_utc_ms LIMIT 1)`),
-    deleteExpired: db.prepare(`DELETE FROM town_mood_influences WHERE world_id = ? AND actor_id = ?
-      AND expires_at_utc_ms <= ?`),
-  };
 
   function ensureNeedsRow(worldId, actorId, nowUtcMs) {
     needsStmts.insert.run(worldId, actorId, JSON.stringify(DEFAULT_NEEDS), nowUtcMs);
@@ -191,17 +177,13 @@ export function createTownNeedsService({ db, needsConfig }) {
   }
 
   /**
-   * 应用一次需求效果（M2 行动 / 相遇结算等来源）。
-   * 以 (worldId, actorId, sourceKey) 幂等：同一来源只生效一次，重试不重复加分。
-   * @returns {boolean} 本次是否实际生效
+   * 应用一次需求效果（M2 行动 / 相遇结算等来源），数值夹在 0—100。
+   * 契约：调用方保证同一来源只调用一次——动作完成的结算发生在唯一的完成拍、
+   * 相遇结算与经历入账在同一事务内，因此不需要额外的"来源台账"。
    */
-  function applyNeedEffects({ worldId, actorId, sourceKey, effects, nowUtcMs }) {
-    if (!sourceKey || typeof effects !== 'object' || !effects
-      || !NEED_KEYS.some(k => Number.isFinite(effects[k]))) return false;
+  function applyNeedEffects({ worldId, actorId, effects, nowUtcMs }) {
+    if (!effects || typeof effects !== 'object' || !NEED_KEYS.some(k => Number.isFinite(effects[k]))) return false;
     ensureNeedsRow(worldId, actorId, nowUtcMs);
-    const inserted = effectStmts.insert.run(worldId, actorId, sourceKey,
-      JSON.stringify(effects), nowUtcMs);
-    if (inserted.changes === 0) return false;
     const row = needsStmts.get.get(worldId, actorId);
     const needs = parseNeeds(row.needs_json) || { ...DEFAULT_NEEDS };
     for (const key of NEED_KEYS) {
@@ -212,53 +194,15 @@ export function createTownNeedsService({ db, needsConfig }) {
   }
 
   /**
-   * 添加心情影响项：同一 sourceKey 去重；每人活跃影响项有上限（超出淘汰最早一条）；
-   * 过期项在写入时顺手清理。强度 -1..1，负值代表糟糕经历。
-   * @returns {boolean} 是否新增
+   * 综合心情：只看需求基线（六类均值映射到 -1..1）。只读计算，不回写；
+   * 聊天情绪（emotion_snapshots）由 townService 独立读取，两者不互相注入，避免循环放大。
    */
-  function addMoodInfluence({ worldId, actorId, sourceKey, kind, intensity, nowUtcMs, ttlMs }) {
-    if (!sourceKey || !kind || !Number.isFinite(intensity) || intensity < -1 || intensity > 1
-      || !Number.isSafeInteger(nowUtcMs) || !Number.isSafeInteger(ttlMs) || ttlMs < 1) return false;
-    if (influenceStmts.get.get(worldId, actorId, sourceKey)) return false;
-    influenceStmts.deleteExpired.run(worldId, actorId, nowUtcMs);
-    const active = influenceStmts.countActive.get(worldId, actorId, nowUtcMs).n;
-    if (active >= influenceCfg.activeCap) {
-      influenceStmts.deleteOldest.run(worldId, actorId, worldId, actorId, nowUtcMs);
-    }
-    return influenceStmts.insert.run(worldId, actorId, sourceKey, kind, intensity,
-      nowUtcMs, nowUtcMs + ttlMs).changes === 1;
-  }
-
-  function listActiveInfluences(worldId, actorId, nowUtcMs) {
-    return influenceStmts.listActive.all(worldId, actorId, nowUtcMs)
-      .map(row => ({ kind: row.kind, intensity: row.intensity,
-        createdAtUtcMs: row.created_at_utc_ms, expiresAtUtcMs: row.expires_at_utc_ms, sourceKey: row.source_key }));
-  }
-
-  /**
-   * 综合心情：需求基线（均值映射到 -1..1）+ 影响项（同类别边际递减，权重减半每次），
-   * 结果夹在 -1..1。只读计算，不回写；聊天情绪（emotion_snapshots）由 townService
-   * 独立读取，两者不互相注入，避免循环放大。
-   */
-  function computeMood({ worldId, actorId, nowUtcMs, personality = null }) {
+  function computeMood({ worldId, actorId }) {
     const row = needsStmts.get.get(worldId, actorId);
     const needs = (row && parseNeeds(row.needs_json)) || { ...DEFAULT_NEEDS };
     const avg = NEED_KEYS.reduce((sum, k) => sum + needs[k], 0) / NEED_KEYS.length;
-    let mood = avg / 50 - 1;
-    const influences = listActiveInfluences(worldId, actorId, nowUtcMs);
-    const kindCount = new Map();
-    for (const item of influences) {
-      const seen = kindCount.get(item.kind) ?? 0;
-      kindCount.set(item.kind, seen + 1);
-      mood += item.intensity / (1 + 0.5 * seen);
-    }
-    return Object.freeze({
-      mood: Math.max(-1, Math.min(1, mood)),
-      needs: Object.freeze({ ...needs }),
-      influenceCount: influences.length,
-    });
+    return Object.freeze({ mood: Math.max(-1, Math.min(1, avg / 50 - 1)), needs: Object.freeze({ ...needs }) });
   }
 
-  return { ensureProfile, getProfiles, settleNeeds, getNeeds, applyNeedEffects,
-    addMoodInfluence, listActiveInfluences, computeMood };
+  return { ensureProfile, getProfiles, settleNeeds, getNeeds, applyNeedEffects, computeMood };
 }

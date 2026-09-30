@@ -9,7 +9,7 @@ import { getDb } from '../../db/index.js';
 import { createTownActorRegistry } from './townActorRegistry.js';
 import { createTownNeedsService } from './townNeedsService.js';
 import { createTownRelationshipService } from './townRelationshipService.js';
-import { createResolver } from './townActivityFeed.js';
+import { createActorDirectory } from './townActorDirectory.js';
 import { config } from '../../config.js';
 
 const NEED_LABELS = Object.freeze({
@@ -35,8 +35,8 @@ export function createTownResidentStatus({ db, registry }) {
 
   function ofActor(actorId) {
     const world = registry.getWorldState();
-    const resolve = createResolver(db, registry, world.worldId);
-    const actor = resolve.actor(actorId);
+    const directory = createActorDirectory({ db, registry, worldId: world.worldId });
+    const actor = directory.actor(actorId);
     const needs = needsService.getNeeds(world.worldId, actorId, Date.now());
     // 没有需求档案（未知/未参与模拟的居民）时不编造心情——computeMood 会用默认满值兜底，
     // 那会让空骨架看起来「心情不错」
@@ -57,16 +57,31 @@ export function createTownResidentStatus({ db, registry }) {
 
     // 最近有来往的人：按熟悉度 + 好感排序，取前 3（熟人/好感才有展示价值）
     const outgoing = [...relationshipService.listOutgoing(world.worldId, actorId)]
-      .map(([otherId, rel]) => ({ ...rel, name: resolve.actor(otherId).name }))
+      .map(([otherId, rel]) => ({ ...rel, name: directory.actor(otherId).name }))
       .filter(rel => rel.familiarity > 0 || rel.affection !== 0)
       .sort((a, b) => (b.familiarity + Math.max(0, b.affection)) - (a.familiarity + Math.max(0, a.affection)))
       .slice(0, 3)
       .map(rel => ({ name: rel.name, familiarity: Math.round(rel.familiarity),
         affection: Math.round(rel.affection) }));
 
+    // 今日日程：NPC 人格里程碑里的作息段（几点做什么）——居民最直接的「日程」来源
+    let routine = [];
+    try {
+      const npcId = db.prepare(`SELECT npc_id FROM town_actors WHERE actor_id = ?`).get(actorId)?.npc_id;
+      if (npcId) {
+        const raw = db.prepare('SELECT routine_json FROM town_npcs WHERE id = ?').get(npcId)?.routine_json;
+        routine = (JSON.parse(raw || '[]') || [])
+          .filter(slot => slot && typeof slot.start === 'string' && typeof slot.end === 'string' && slot.activity)
+          .slice(0, 12)
+          .map(slot => ({ start: slot.start, end: slot.end, activity: String(slot.activity),
+            locationKey: slot.locationKey || null }));
+      }
+    } catch { routine = []; }
+
     return {
       actorId,
       name: actor.name,
+      routine,
       needs: needs ? Object.fromEntries(Object.entries(NEED_LABELS)
         .map(([key, label]) => [key, { label, value: Math.round(needs[key] ?? 100) }])) : null,
       mood: mood ? { value: Number(mood.mood.toFixed(2)), label: moodLabel(mood.mood) } : null,

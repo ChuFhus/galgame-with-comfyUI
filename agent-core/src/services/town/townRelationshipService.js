@@ -8,6 +8,10 @@
  * 关系反馈：familiarity/affection 通过 relationshipEncounterFactor 进入下一次
  * 相遇判定（越熟越容易碰面），保证关系数值影响下一步决策而非装饰性数字。
  *
+ * 精简（2026-09-30）：每日上限不再"每次相遇存整行再按天 count"，改为
+ * town_relationship_effects (world,from,to,day) → count 的计数表：
+ * 行数 = 当天有来往的居民对数（天然有界，且上限判断是单行读取）。
+ *
  * 身份口径：只对「在册活身份」（非 archived、非 mergedInto）结算；合并/退役
  * 身份的历史行保留、不复制、不迁移到新身份（§10.1.6 的完整合并策略后续细化）。
  */
@@ -40,18 +44,17 @@ export function createTownRelationshipService({ db, socialConfig }) {
     update: db.prepare(`UPDATE town_actor_relationships
       SET familiarity = ?, affection = ?, trust = ?, conflict = ?, version = version + 1, updated_at_utc_ms = ?
       WHERE world_id = ? AND from_actor_id = ? AND to_actor_id = ?`),
-    recordEffect: db.prepare(`INSERT OR IGNORE INTO town_relationship_effects
-      (world_id, from_actor_id, to_actor_id, source_key, effects_json, applied_at_utc_ms) VALUES (?, ?, ?, ?, ?, ?)`),
-    countTodayEffects: db.prepare(`SELECT count(*) n FROM town_relationship_effects
-      WHERE world_id = ? AND from_actor_id = ? AND to_actor_id = ?
-      AND applied_at_utc_ms >= ? AND applied_at_utc_ms < ?`),
+    // 每日计数：一行 = (一对居民, 一天)
+    readDayCount: db.prepare(`SELECT count AS hits FROM town_relationship_effects
+      WHERE world_id = ? AND from_actor_id = ? AND to_actor_id = ? AND day = ?`),
+    bumpDayCount: db.prepare(`INSERT INTO town_relationship_effects
+      (world_id, from_actor_id, to_actor_id, day, count, updated_at_utc_ms) VALUES (?, ?, ?, ?, 1, ?)
+      ON CONFLICT(world_id, from_actor_id, to_actor_id, day) DO UPDATE SET
+        count = count + 1, updated_at_utc_ms = excluded.updated_at_utc_ms`),
     listFor: db.prepare('SELECT * FROM town_actor_relationships WHERE world_id = ? AND from_actor_id = ?'),
   };
 
-  const dayWindow = nowUtcMs => {
-    const dayStart = Math.floor(nowUtcMs / 86400000) * 86400000;
-    return [dayStart, dayStart + 86400000];
-  };
+  const dayNumberOf = nowUtcMs => Math.floor(nowUtcMs / 86400000);
 
   function getRelationship(worldId, fromActorId, toActorId) {
     const row = stmts.get.get(worldId, fromActorId, toActorId);
@@ -70,23 +73,22 @@ export function createTownRelationshipService({ db, socialConfig }) {
   }
 
   /**
-   * 结算一条有向关系增量。以 (world, from, to, source_key) 幂等；熟悉度增量受
-   * 每日上限约束（按效果行数计当日已生效次数），超限的来源被跳过（不记账）。
+   * 结算一条有向关系增量。**调用方保证同一来源只调用一次**（相遇结算在单事务内、
+   * 由事件存在性检查兜底）；熟悉度增量受每日上限约束（读当天的计数行），超限即跳过。
    * @returns {boolean} 本次是否实际生效
    */
-  function applyRelationshipEffects({ worldId, fromActorId, toActorId, sourceKey, effects, nowUtcMs }) {
+  function applyRelationshipEffects({ worldId, fromActorId, toActorId, effects, nowUtcMs }) {
     if (fromActorId === toActorId) return false;
-    if (!sourceKey || !effects || !RELATIONSHIP_KEYS.some(k => Number.isFinite(effects[k]))) return false;
+    if (!effects || !RELATIONSHIP_KEYS.some(k => Number.isFinite(effects[k]))) return false;
     if (!Number.isSafeInteger(nowUtcMs)) throw new TypeError('nowUtcMs must be safe integer ms');
-    const [dayStart, dayEnd] = dayWindow(nowUtcMs);
+    const day = dayNumberOf(nowUtcMs);
     const cap = socialConfig.dailyFamiliarityCap;
-    if (Number.isFinite(effects.familiarity) && effects.familiarity > 0 && cap > 0) {
-      const today = stmts.countTodayEffects.get(worldId, fromActorId, toActorId, dayStart, dayEnd).n;
+    const gained = Number.isFinite(effects.familiarity) && effects.familiarity > 0;
+    if (gained && cap > 0) {
+      const today = stmts.readDayCount.get(worldId, fromActorId, toActorId, day)?.hits ?? 0;
       if (today >= cap) return false;
     }
-    const inserted = stmts.recordEffect.run(worldId, fromActorId, toActorId, sourceKey,
-      JSON.stringify(effects), nowUtcMs);
-    if (inserted.changes === 0) return false;
+    if (gained) stmts.bumpDayCount.run(worldId, fromActorId, toActorId, day, nowUtcMs);
     stmts.insert.run(worldId, fromActorId, toActorId, nowUtcMs);
     const row = stmts.get.get(worldId, fromActorId, toActorId);
     const next = {
@@ -101,11 +103,11 @@ export function createTownRelationshipService({ db, socialConfig }) {
   }
 
   /** 双向结算一次相遇/共同经历（A→B 与 B→A 各一条，方向对称同量）。 */
-  function applyMutualEffects({ worldId, actorIds, sourceKey, effects, nowUtcMs }) {
+  function applyMutualEffects({ worldId, actorIds, effects, nowUtcMs }) {
     if (!Array.isArray(actorIds) || actorIds.length !== 2 || new Set(actorIds).size !== 2) return false;
     const [a, b] = actorIds;
-    const forward = applyRelationshipEffects({ worldId, fromActorId: a, toActorId: b, sourceKey, effects, nowUtcMs });
-    const backward = applyRelationshipEffects({ worldId, fromActorId: b, toActorId: a, sourceKey, effects, nowUtcMs });
+    const forward = applyRelationshipEffects({ worldId, fromActorId: a, toActorId: b, effects, nowUtcMs });
+    const backward = applyRelationshipEffects({ worldId, fromActorId: b, toActorId: a, effects, nowUtcMs });
     return forward || backward;
   }
 

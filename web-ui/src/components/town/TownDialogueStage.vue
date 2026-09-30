@@ -45,6 +45,7 @@ v-if="person.side === 'left' && npcBubble && chatActive && !historyOpen" :key="n
                   <time>{{ formatActivityTime(item.occurredAt) }}</time>
                   <span v-if="item.local" class="td-footprint-chip">足迹</span>
                   <span>{{ item.text }}</span>
+                  <span v-if="item.reason" class="td-reason-chip">{{ item.reason }}</span>
                 </li>
               </ul>
             </template>
@@ -317,6 +318,11 @@ h2 { color: #59483d; font-size: 20px; font-weight: 700; margin: 6px 0 8px; }
 .td-footprint-chip {
   flex: none; padding: 1px 6px; border-radius: 999px; font-size: 10px; color: #6d826d;
   border: 1px dashed rgba(124, 143, 124, .6); background: rgba(124, 143, 124, .1);
+}
+/* 「为什么做/为什么中断」：理由小标签，靠右弱化显示 */
+.td-reason-chip {
+  flex: none; margin-left: auto; padding: 1px 6px; border-radius: 999px; font-size: 10px;
+  color: #a1846e; border: 1px solid rgba(161, 132, 110, .4); background: rgba(255, 251, 243, .7);
 }
 .td-speaker, .td-muted { font-size: 12px; color: #947f6d; }
 /* overflow-x 同样 clip：消息里的果冻按钮贴边放大时会把横向滚动条闪出来（同 TownResidentActions） */

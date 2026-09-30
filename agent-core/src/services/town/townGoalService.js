@@ -3,7 +3,7 @@
  *
  * 纯同步规则层。每个居民最多 1 个主目标（slot 0）+ 2 个近期愿望（slot 1/2），
  * 目标从本地规则目录挑选（检查职业/兴趣等可达条件，不生成无法完成的目标），
- * 按本地日挑选（游标表防逐 tick 重选）。进度只从**已结算事实**消费（与 M0-M4
+ * 按本地日挑选（同一天幂等：无游标表，靠确定性哈希 + 目标行自身的日期）。进度只从**已结算事实**消费（与 M0-M4
  * 的效果结算同一批来源），完成/受阻/替换都有明确状态；完成后不重复结算奖励。
  *
  * 技能来自有效行为，每日收益有上限且随等级边际递减；习惯只增加决策倾向，
@@ -56,11 +56,6 @@ export function createTownGoalService({ db, goalConfig }) {
       addProgress: db.prepare(`UPDATE town_resident_goals SET progress = ?, status = ?, updated_utc_ms = ?
         WHERE world_id = ? AND actor_id = ? AND slot = ?`),
     },
-    cursor: {
-      get: db.prepare('SELECT last_pick_day FROM town_resident_goal_cursor WHERE world_id = ? AND actor_id = ?'),
-      set: db.prepare(`INSERT INTO town_resident_goal_cursor (world_id, actor_id, last_pick_day) VALUES (?, ?, ?)
-        ON CONFLICT(world_id, actor_id) DO UPDATE SET last_pick_day = excluded.last_pick_day`),
-    },
     skills: {
       get: db.prepare('SELECT * FROM town_resident_skills WHERE world_id = ? AND actor_id = ? AND key = ?'),
       upsert: db.prepare(`INSERT INTO town_resident_skills (world_id, actor_id, key, kind, level, daily_gain, daily_day)
@@ -91,19 +86,19 @@ export function createTownGoalService({ db, goalConfig }) {
   }
 
   /**
-   * 按本地日确保目标在册：完成/受阻的槽位换新目标；active 的保留（不重复结算奖励）。
-   * 每居民每本地日最多评估一次。
+   * 确保目标在册（幂等，可每拍调用）：
+   * - active 且条件仍成立的槽位保留（不重复结算奖励，也不逐拍改选）
+   * - 条件失效的 active 标记受阻（仅在状态真的变化时写库）
+   * - 完成/受阻的槽位**次日**换新目标（判断依据就写在目标行自己的 updated_utc_ms 上，
+   *   不需要单独的"按日挑选游标"表）；当天新挑的目标由确定性哈希选出，重复调用结果一致
    */
   function ensureGoals({ worldId, actorId, profile, context, localDay, nowUtcMs }) {
     if (!Number.isSafeInteger(localDay)) throw new TypeError('localDay must be safe integer');
-    const cursor = stmts.cursor.get.get(worldId, actorId);
-    if (cursor && cursor.last_pick_day >= localDay) return readGoals(worldId, actorId);
-    stmts.cursor.set.run(worldId, actorId, localDay);
-
     const valid = candidatesFor(profile, context);
     const existing = stmts.goals.list.all(worldId, actorId);
+    const dayOf = ms => (Number.isFinite(ms) ? Math.floor(ms / 86400000) : 0);
     for (const row of existing) {
-      // 条件失效（如工作地点消失）的活跃目标标记受阻；完成的保持完成
+      // 条件失效（如工作地点消失）的活跃目标标记受阻；重复评估不重复写库
       if (row.status === 'active' && !valid.includes(row.type)) {
         stmts.goals.setStatus.run('blocked', nowUtcMs, worldId, actorId, row.slot);
       }
@@ -118,6 +113,8 @@ export function createTownGoalService({ db, goalConfig }) {
     for (let slot = 0; slot < 3; slot++) {
       const current = stmts.goals.get.get(worldId, actorId, slot);
       if (current && current.status === 'active') continue;
+      // 完成/受阻的槽位只在次日换新（当天保留在册，状态面板还能看到"已完成"）
+      if (current && current.status !== 'active' && dayOf(current.updated_utc_ms) >= localDay) continue;
       const options = preference[slot].filter(type => valid.includes(type) && !used.has(type));
       if (options.length === 0) continue;
       const type = options[dayHash(worldId, actorId, localDay, slot) % options.length];

@@ -62,7 +62,8 @@ test('自然走动是纯演出：游走不落 town_actions 行，走位照常；
   for (let i = 0; i < 5; i++) await step(10 * 60_000); // 让在飞的 life_eat 跑完进入结算
   const lifeRows = db.prepare("SELECT count(*) n FROM town_actions WHERE type LIKE 'life_%'").get().n;
   assert.ok(lifeRows > 0, '需求衰减后应产生生活动作行（有意义移动仍记录）');
-  const eatSettled = db.prepare("SELECT count(*) n FROM town_need_effects WHERE source_key LIKE 'life_eat:%'").get().n;
+  // 精简后：结算不再另开台账表，「吃到饭」看动作行本身（完成态 life_eat）
+  const eatSettled = db.prepare("SELECT count(*) n FROM town_actions WHERE type = 'life_eat' AND status = 'completed'").get().n;
   assert.ok(eatSettled > 0, '生活动作的需求结算照常（来源键幂等）');
   const cancelled = db.prepare("SELECT count(*) n FROM town_actions WHERE status = 'cancelled'").get().n;
   assert.equal(cancelled, 0, '无打断时不应出现取消重建（决策节奏与动作自然时长对齐）');

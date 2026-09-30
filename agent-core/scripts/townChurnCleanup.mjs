@@ -128,6 +128,30 @@ total += sweep('town_actions',
    WHERE type IN (${TYPE_LIST}) AND status='cancelled' AND updated_at < ${cutoff} AND rowid > ? ORDER BY rowid LIMIT ?`,
   'DELETE FROM town_actions');
 
+// ── 旧审计存量（2026-09-30 精简后已无读者）：活动流水表、action 类领域事件、幂等台账 ──
+if (args.get('legacy') === 'true') {
+  const legacy = {
+    活动流水_全表: count('SELECT count(*) n FROM town_activity_log'),
+    action类事件_无经历引用: count(`SELECT count(*) n FROM town_domain_events e WHERE e.type='town.action.changed'
+      AND NOT EXISTS (SELECT 1 FROM town_experiences x WHERE x.event_id = e.event_id)`),
+    幂等台账_全表: count('SELECT count(*) n FROM town_action_requests'),
+  };
+  for (const [label, value] of Object.entries(legacy)) console.log(`[cleanup] 旧存量 ${label}: ${value}`);
+  if (apply) {
+    let removed = 0;
+    // 先删子行（投递）再删事件，最后删流水与台账
+    removed += db.prepare(`DELETE FROM town_event_deliveries WHERE event_id IN (
+      SELECT e.event_id FROM town_domain_events e WHERE e.type='town.action.changed'
+      AND NOT EXISTS (SELECT 1 FROM town_experiences x WHERE x.event_id = e.event_id))`).run().changes;
+    removed += db.prepare(`DELETE FROM town_domain_events WHERE type='town.action.changed'
+      AND NOT EXISTS (SELECT 1 FROM town_experiences x WHERE x.event_id = event_id)`).run().changes;
+    removed += db.prepare('DELETE FROM town_activity_log').run().changes;
+    removed += db.prepare('DELETE FROM town_action_requests').run().changes;
+    console.log(`[cleanup] 旧存量已删除 ${removed} 行`);
+  }
+}
+
+
 console.log(`[cleanup] 完成，共删除 ${total} 行`);
 console.log('[cleanup] 磁盘空间在下次后端启动的 VACUUM 归还（app.js 启动时按空闲页比例执行）');
 db.close();
