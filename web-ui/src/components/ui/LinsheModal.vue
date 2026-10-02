@@ -1,5 +1,6 @@
 <template>
-  <Teleport :to="anchor || 'body'">
+  <Teleport :to="anchor || 'body'" defer>
+    <!-- 首次直达页面时，anchor 宿主与弹窗同批挂载；等宿主插入后再解析目标。 -->
     <Transition name="modal-fade">
       <div v-if="isOpen" class="modal-overlay linshe-modal-overlay" :class="{ 'is-host-anchored': isAnchored }" @click.self="close">
         <div class="modal-panel linshe-modal" :class="[{ 'modal-wide': wide, 'modal-full': full }, panelClass]" @click.stop>
@@ -42,9 +43,10 @@ const props = defineProps({
   panelClass: { type: [String, Array, Object], default: '' },
   bodyClass: { type: [String, Array, Object], default: '' },
   /**
-   * 宿主选择器（如 '.page-host'）：遮罩 Teleport 进该元素并铺满它，面板相对宿主居中，
+   * 宿主选择器（如 '.page-modal-host'）：遮罩 Teleport 进该元素并铺满它，面板相对宿主居中，
    * 而不是相对整个视口居中（页面两侧有导航 / 侧栏时，视口居中的面板看着是偏的）。
-   * 宿主需要是定位元素（position 非 static）。留空＝旧口径：Teleport 到 body、相对视口居中。
+   * 宿主需要是定位元素（position 非 static），并与路由内容隔开，避免卸载时移除路由插入锚点。
+   * 留空＝旧口径：Teleport 到 body、相对视口居中。
    */
   anchor: { type: String, default: '' },
 })

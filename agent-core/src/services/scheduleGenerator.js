@@ -15,6 +15,7 @@ import { chatSync } from '../llm/llm-client.js';
 import { config } from '../config.js';
 import { getLocalDateKey } from '../utils/localDate.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
+import { reapplyActiveEventSchedule } from './eventSchedule.js';
 
 /**
  * 截取角色人格 prompt：从开头到 "##你的外观" 之前
@@ -486,11 +487,13 @@ export function snapshotTodaySchedule(characterId) {
     INSERT OR REPLACE INTO daily_schedules (character_id, schedule_date, schedule_json)
     VALUES (?, ?, ?)
   `).run(characterId, today, template.schedule_json);
+  reapplyActiveEventSchedule(characterId, db);
 
   // 清理超过 2 天的旧快照
   db.prepare(
     `DELETE FROM daily_schedules WHERE character_id = ? AND schedule_date < DATE('now', 'localtime', '-2 days')`
   ).run(characterId);
 
-  return template.schedule_json;
+  return db.prepare('SELECT schedule_json FROM daily_schedules WHERE character_id = ? AND schedule_date = ?')
+    .get(characterId, today).schedule_json;
 }

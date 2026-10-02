@@ -1,6 +1,6 @@
 <template>
-  <!-- anchor：居民动态窗跟「居民动态」面板同口径，相对小镇页面（page-host）居中 -->
-  <LinsheModal :model-value="modelValue" :title="`${name || '居民'} · 动态`" anchor=".page-host" @update:model-value="$emit('update:modelValue', $event)">
+  <!-- 与全镇动态面板共用页面弹窗层，保持相对小镇页面居中。 -->
+  <LinsheModal :model-value="modelValue" :title="`${name || '居民'} · 动态`" anchor=".page-modal-host" @update:model-value="$emit('update:modelValue', $event)">
     <p v-if="loading && !activity.length" class="tra-muted" role="status">正在读取行动记录…</p>
     <p v-else-if="!activity.length" class="tra-muted">还没有留下行动记录，去镇上转转会有的。</p>
     <ul v-else class="tra-list">

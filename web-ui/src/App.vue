@@ -22,6 +22,8 @@
           <component v-if="Component" :is="Component" :key="route.path" />
         </Transition>
       </router-view>
+      <!-- 页面弹窗独立挂载，避免 Teleport 锚点成为路由页面切换时的插入参照。 -->
+      <div class="page-modal-host"></div>
     </div>
   </div>
   <ConfirmDialog ref="confirmDialog" />
@@ -298,6 +300,8 @@ onUnmounted(() => {
 <style>
 .app-layout { display: flex; flex: 1; min-height: 0; position: relative; z-index: 1; }
 .page-host { position: relative; flex: 1; min-width: 0; }
+.page-modal-host { position: absolute; inset: 0; pointer-events: none; }
+.page-modal-host .modal-overlay { pointer-events: auto; }
 #app { position: relative; z-index: 1; }
 
 /* ── 移动端 Sidebar 遮罩 ── */

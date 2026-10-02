@@ -36,8 +36,8 @@ v-if="latestActivity && initialized" :key="latestActivity.seq" class="town-activ
         <span class="tat-text">{{ latestActivity.text }}</span>
       </div>
     </Transition>
-    <!-- anchor：这个窗口属于小镇页面，左右居中相对 page-host（视口居中会被左侧导航/侧栏带偏） -->
-    <LinsheModal v-model="activityPanelOpen" title="居民动态" anchor=".page-host">
+    <!-- anchor：窗口相对小镇页面居中；挂到独立弹窗层，不与路由页面共用 Teleport 容器。 -->
+    <LinsheModal v-model="activityPanelOpen" title="居民动态" anchor=".page-modal-host">
       <div class="town-activity-panel">
         <div class="tap-toolbar">
           <span class="tap-hint">最近 40 条全镇行动记录</span>

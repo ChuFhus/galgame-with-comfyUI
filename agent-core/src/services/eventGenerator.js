@@ -26,7 +26,8 @@ import { createTownActorRegistry } from './town/townActorRegistry.js';
 import { broadcastNewEvent, broadcastEventUpdate, broadcastEventConclusion } from './eventNotificationBus.js';
 import { applyMemoryActions, softDeleteMemory } from './memory/memoryRepository.js';
 import { getMemorySettings } from './memory/memoryConfig.js';
-import { getCurrentActivity } from './scheduleManager.js';
+import { getCurrentActivity, syncEventSchedule } from './scheduleManager.js';
+import { captureEventSchedule } from './eventSchedule.js';
 import { getTimeTag, getLightNoteWithWeather } from './timeLight.js';
 import { matchAll } from './characterSearch.js';
 import { buildCharacterPersona } from './characterPersona.js';
@@ -354,11 +355,12 @@ export async function generateEvent(character, options = {}) {
     : '';
 
   // 日程注入：获取角色当前活动，让事件起点与当前活动自然衔接
+  const scheduleBinding = captureEventSchedule(character.id, now, db);
   let scheduleContextLine = '';
   let scheduleSystemBlock = '';
   try {
     if (config.features.schedule !== false) {
-      const currentActivity = getCurrentActivity(character.id);
+      const currentActivity = scheduleBinding?.activity || getCurrentActivity(character.id);
       if (currentActivity && currentActivity.activity !== '自由时间') {
         scheduleContextLine = `此时${displayName}正在${currentActivity.location}${currentActivity.activity}。`;
         const descPart = currentActivity.description ? `——${currentActivity.description}` : '';
@@ -520,7 +522,7 @@ ${directorPrompt}`
     }
   }
   try {
-    rawResult = await chatSync(msgs, { temperature: 0.7, max_tokens: 4096, response_format: { type: 'json_object' }, label: '奇遇生成' });
+    rawResult = await (options.llm?.chatSync || chatSync)(msgs, { temperature: 0.7, max_tokens: 4096, response_format: { type: 'json_object' }, label: '奇遇生成' });
     const jsonStr = extractFirstJson(rawResult);
     if (!jsonStr) throw new Error('No JSON found in LLM response');
     eventData = JSON.parse(repairJson(jsonStr));
@@ -550,7 +552,7 @@ ${directorPrompt}`
   let imageUrl = null;
   try {
     const charArtist = charArtistOverrideWithFallback(character, otherChars);
-    const genResult = await generateImageRaw(eventData.prompt, {
+    const genResult = await (options.image?.generateImageRaw || generateImageRaw)(eventData.prompt, {
       ragQuery: eventData.description,
       artist: charArtist !== null ? charArtist : config.comfyui.eventArtist,
       width: config.comfyui.eventWidth,
@@ -593,6 +595,7 @@ ${directorPrompt}`
     image: imageUrl,
     // 存储多人模式信息，供后续分支生成时复用
     multiPerson: multiPerson ? { otherId: multiPerson.otherId, otherName: multiPerson.otherName, otherPersona: multiPerson.otherPersona, relDesc: multiPerson.relDesc } : null,
+    scheduleBinding,
   }];
   const expiresAt = new Date(now.getTime() + eventType.durationMin * 60 * 1000).toISOString();
 
@@ -627,6 +630,7 @@ ${directorPrompt}`
 
   // 7. 构建返回数据
   const event = db.prepare(`SELECT * FROM character_events WHERE id = ?`).get(eventId);
+  syncEventSchedule(event);
 
   // 8. SSE 广播
   broadcastNewEvent({
@@ -653,7 +657,7 @@ ${directorPrompt}`
 /**
  * 生成下一步分支
  */
-export async function generateNextBranch(character, event, choice) {
+export async function generateNextBranch(character, event, choice, deps = {}) {
   const db = getDb();
   const now = new Date();
   const branchTimeExtensionMinutes = 5;
@@ -677,6 +681,7 @@ export async function generateNextBranch(character, event, choice) {
     return null;
   }
 
+  try {
   // 用户已成功提交一个有效分支选择，立即延长倒计时，避免分支生成期间事件到期。
   db.prepare(`
     UPDATE character_events
@@ -686,6 +691,8 @@ export async function generateNextBranch(character, event, choice) {
   event.expires_at = db.prepare(
     `SELECT expires_at FROM character_events WHERE id = ?`
   ).get(event.id).expires_at;
+  // 仍延长开场日程，不能在跨过边界后改成延长下一个活动。
+  syncEventSchedule(event);
 
   // 2. 加载关系网
   const relationships = db.prepare(`
@@ -721,7 +728,6 @@ export async function generateNextBranch(character, event, choice) {
   const choiceExtra = choice.choice !== 'C' && choice.customText ? '——' + choice.customText : '';
 
   // 4. LLM 生成下一步（try-catch 确保失败时清除 processing 标记）
-  try {
   const worldSetting2 = getWorldSetting();
   const jailbreakPrompt = worldSetting2
     ? getSystemRulesWithWorld({ roleplay: false })
@@ -877,7 +883,7 @@ ${directorPrompt2}${prevSceneBlock}`
   for (let attempt = 1; attempt <= MAX_BRANCH_ATTEMPTS; attempt++) {
     rawBranchResult = '';
     try {
-      rawBranchResult = await chatSync(msgs, { temperature: 0.7, max_tokens: 4096, response_format: { type: 'json_object' }, label: '事件分支' });
+      rawBranchResult = await (deps.llm?.chatSync || chatSync)(msgs, { temperature: 0.7, max_tokens: 4096, response_format: { type: 'json_object' }, label: '事件分支' });
       const jsonStr = extractFirstJson(rawBranchResult);
       if (!jsonStr) throw new Error('No JSON found in LLM response');
       const parsed = JSON.parse(repairJson(jsonStr));
@@ -944,7 +950,7 @@ ${directorPrompt2}${prevSceneBlock}`
   let imageUrl = null;
   try {
     const charArtist = charArtistOverrideWithFallback(character, branchOtherChars);
-    const genResult = await generateImageRaw(branchData.prompt, {
+    const genResult = await (deps.image?.generateImageRaw || generateImageRaw)(branchData.prompt, {
       ragQuery: branchData.description || event.description,
       artist: charArtist !== null ? charArtist : config.comfyui.eventArtist,
       width: config.comfyui.eventWidth,

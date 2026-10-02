@@ -15,6 +15,7 @@ import { snapshotTodaySchedule } from './scheduleGenerator.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { getLocalDateKey } from '../utils/localDate.js';
 import { onCharacterWake } from './dreamService.js';
+import { extendEventSchedule, reapplyActiveEventSchedule } from './eventSchedule.js';
 
 
 // ── 缓存 ──
@@ -205,11 +206,13 @@ function getTodayScheduleRaw(characterId) {
         INSERT OR REPLACE INTO daily_schedules (character_id, schedule_date, schedule_json)
         VALUES (?, ?, ?)
       `).run(characterId, today, template.schedule_json);
+      reapplyActiveEventSchedule(characterId, db);
       // 清理超过 2 天的旧快照
       db.prepare(
         `DELETE FROM daily_schedules WHERE character_id = ? AND schedule_date < DATE('now', 'localtime', '-2 days')`
       ).run(characterId);
-      row = { schedule_json: template.schedule_json };
+      row = db.prepare('SELECT schedule_json FROM daily_schedules WHERE character_id = ? AND schedule_date = ?')
+        .get(characterId, today);
     }
   }
 
@@ -681,6 +684,26 @@ export function ensureTodaySchedule(characterId) {
  */
 export function invalidateCache(characterId) {
   activityCache.delete(characterId);
+}
+
+/** 奇遇时间优先于日程；修改快照后立即同步私聊缓存、睡眠状态及日程通知。 */
+export function syncEventSchedule(event) {
+  const changes = extendEventSchedule(event);
+  if (!changes.length) return;
+  invalidateCache(event.character_id);
+  syncSleepingState(event.character_id);
+  const name = getDb().prepare('SELECT display_name FROM characters WHERE id = ?').get(event.character_id)?.display_name || '';
+  const today = getLocalDateKey();
+  const change = changes.find(item => item.date === today) || changes[0];
+  broadcast('schedule_changed', {
+    character_id: event.character_id,
+    display_name: name,
+    activity: change.activity.activity,
+    start_time: change.activity.startTime,
+    end_time: change.activity.endTime,
+    target_date: change.date,
+    source: 'event',
+  });
 }
 
 /**
