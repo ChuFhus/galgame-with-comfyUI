@@ -308,21 +308,31 @@ test('pickWorldLoot draws only from clothing and transform pools', () => {
   }
 });
 
-test('pickWorldLoot follows 50/50 clothing-transform split with 40% world_outfit inside clothing', () => {
+test('pickWorldLoot follows 40/60 clothing-transform split with 40% world_outfit inside clothing', () => {
   const N = 2000;
   const count = { outfit: 0, world_outfit: 0, transform: 0 };
-  for (let i = 0; i < N; i++) count[svc.pickWorldLoot(true).kind]++;
+  const formNames = new Set(svc.WORLD_TRANSFORM_FORMS.map(f => f.name));
+  for (let i = 0; i < N; i++) {
+    const loot = svc.pickWorldLoot(true);
+    count[loot.kind]++;
+    if (loot.kind === 'transform') {
+      // 变身日必须从预设形态池锁定一种，不再由 LLM 自由发挥
+      assert.ok(formNames.has(loot.name), `transform loot name must come from WORLD_TRANSFORM_FORMS, got ${loot.name}`);
+      assert.ok(loot.theme && loot.theme.includes(loot.name === '精灵耳' ? '精灵' : loot.name), 'theme must describe the locked form');
+      assert.equal(loot.key, 'transform');
+    }
+  }
   // 容差 ~±5pp（2000 次时单比例 6σ≈3.4pp，取整留裕量）
   const ratio = k => count[k] / N;
-  assert.ok(Math.abs(ratio('transform') - 0.5) < 0.05, `transform should be ~50%, got ${(ratio('transform') * 100).toFixed(1)}%`);
-  assert.ok(Math.abs(ratio('world_outfit') - 0.2) < 0.05, `world_outfit should be ~20% (50% × 40%), got ${(ratio('world_outfit') * 100).toFixed(1)}%`);
-  assert.ok(Math.abs(ratio('outfit') - 0.3) < 0.05, `fixed outfits should be ~30%, got ${(ratio('outfit') * 100).toFixed(1)}%`);
+  assert.ok(Math.abs(ratio('transform') - 0.4) < 0.05, `transform should be ~40%, got ${(ratio('transform') * 100).toFixed(1)}%`);
+  assert.ok(Math.abs(ratio('world_outfit') - 0.24) < 0.05, `world_outfit should be ~24% (60% × 40%), got ${(ratio('world_outfit') * 100).toFixed(1)}%`);
+  assert.ok(Math.abs(ratio('outfit') - 0.36) < 0.05, `fixed outfits should be ~36%, got ${(ratio('outfit') * 100).toFixed(1)}%`);
 
   // 无世界观：40% 分支回落固定款，world_outfit 恒为 0
   const noWorld = { outfit: 0, transform: 0 };
   for (let i = 0; i < N; i++) noWorld[svc.pickWorldLoot(false).kind]++;
-  assert.equal(noWorld.transform / N > 0.4 && noWorld.transform / N < 0.6, true);
-  assert.ok(noWorld.outfit / N > 0.4 && noWorld.outfit / N < 0.6, `without world setting outfit should be ~50%, got ${(noWorld.outfit / N * 100).toFixed(1)}%`);
+  assert.ok(noWorld.transform / N > 0.3 && noWorld.transform / N < 0.5, `without world setting transform should be ~40%, got ${(noWorld.transform / N * 100).toFixed(1)}%`);
+  assert.ok(noWorld.outfit / N > 0.5 && noWorld.outfit / N < 0.7, `without world setting outfit should be ~60%, got ${(noWorld.outfit / N * 100).toFixed(1)}%`);
 });
 
 test('buildFormatPrompt locks world_state to the drawn loot', () => {

@@ -181,18 +181,39 @@ export function pickFeaturedCharacter(db) {
   `).get() || null;
 }
 
+// 变身日概率（世界状态日内，变身 vs 服装 = 40% vs 60%）
+export const WORLD_TRANSFORM_CHANCE = 0.4;
+
 /**
- * 世界影响抽取：服装 / 变身五五开；服装内部与开箱 rollEffectKey 同口径——
+ * 变身日预设形态池：抽中变身日后从这里均匀锁定一种，全镇当天统一变成这同一种。
+ * 每种形态的 theme 写死器官组合（外观注入与立绘生成都以它为准），不再让 LLM 自由发挥——
+ * 自由发挥会让报纸写出「各家长了不同器官」的五花八门场面，与全镇统一临时外观的注入机制冲突。
+ */
+export const WORLD_TRANSFORM_FORMS = [
+  { name: '猫娘', theme: '猫娘化：头顶一对毛绒猫耳，身后一条细长的猫尾巴，瞳孔变成略扁的竖椭圆；除此之外不多出任何其他器官' },
+  { name: '龙娘', theme: '龙娘化：头顶一对小巧的龙角，身后一条覆着细鳞的龙尾巴；不长翅膀，除此之外不多出任何其他器官' },
+  { name: '狐娘', theme: '狐娘化：头顶一对尖尖的狐耳，身后一条蓬松的大狐狸尾巴；除此之外不多出任何其他器官' },
+  { name: '犬娘', theme: '犬娘化：头顶一对耷拉的狗耳朵，身后一条摇摆的狗尾巴；除此之外不多出任何其他器官' },
+  { name: '兔娘', theme: '兔娘化：头顶一对长长的竖立兔耳，身后一个绒球似的短兔尾；除此之外不多出任何其他器官' },
+  { name: '精灵耳', theme: '精灵化：只把耳朵变成一对向外伸展的细长精灵耳；不长尾巴、不长角，除此之外不多出任何其他器官' },
+  { name: '猪猪', theme: '猪猪化：鼻尖变成可爱的圆猪鼻子，头顶一对小猪耳朵，身后一条卷卷的小猪尾巴；除此之外不多出任何其他器官' },
+];
+
+/**
+ * 世界影响抽取：服装 / 变身四六开（变身 40%）；服装内部与开箱 rollEffectKey 同口径——
  * 40% 命中世界观服装（WORLD_OUTFIT_CHANCE，需世界观存在，否则回落固定款），
  * 其余在固定款里均匀抽。发型卡、功能道具不参与。
+ * 变身不再由 LLM 决定形态：从 WORLD_TRANSFORM_FORMS 预设池里均匀锁定一种，全镇统一。
  * @returns {{ key: string, kind: string, name: string, theme: string }}
  */
 export function pickWorldLoot(hasWorldSetting = false) {
   const all = Object.entries(ITEM_EFFECTS);
   const byKind = kind => all.filter(([, e]) => e.kind === kind);
-  const pool = Math.random() < 0.5
-    ? byKind('transform')
-    : (hasWorldSetting && Math.random() < WORLD_OUTFIT_CHANCE ? byKind('world_outfit') : byKind('outfit'));
+  if (Math.random() < WORLD_TRANSFORM_CHANCE) {
+    const form = WORLD_TRANSFORM_FORMS[Math.floor(Math.random() * WORLD_TRANSFORM_FORMS.length)];
+    return { key: 'transform', kind: 'transform', name: form.name, theme: form.theme };
+  }
+  const pool = hasWorldSetting && Math.random() < WORLD_OUTFIT_CHANCE ? byKind('world_outfit') : byKind('outfit');
   const [key, effect] = pool[Math.floor(Math.random() * pool.length)];
   return { key, kind: effect.kind, name: effect.name, theme: effect.theme };
 }
@@ -525,7 +546,7 @@ export function buildFormatPrompt(withWorldState, featuredName = '今日主角',
   const worldStateExample = withWorldState ? `,
   "world_state": {
     "name": "状态名（2~6字，要让读者一眼看出今天全镇与素材里给到的「${worldLoot?.name || '今日异变'}」有关，如「全镇换装日」这种叫法，不要照抄示例）",
-    "description": "第三人称说明（120~200字：这种状态今天如何笼罩小镇、居民会经历什么、到明天自然消退。全镇居民都受到素材指定的效果影响，要写出大家换上/变身后的具体样子与生活变化）",
+    "description": "第三人称说明（120~200字：这种状态今天如何笼罩小镇、居民会经历什么、到明天自然消退。全镇居民都受到素材指定的同一种效果影响——换上的是同一套服装/变成的是同一种形态，要写出大家换上/变身后的具体样子与生活变化）",
     "outfit": "第三人称全镇统一外观描述（60~120字：只写外观不写剧情，按素材【今日镇内异变】的效果主题取材，写清居民们换上的服装款式/变身后的形态细节——配色、材质、标志性元素等；这段文字会被作为今天的临时外观注入每个角色的外观段与立绘生成，全镇统一同一种）",
     "news": "报纸对它的报道（120~240字，可带一点「号外」式的打趣口吻，报道全镇居民受这个效果影响的众生相）",
     "effect_prompt": "第二人称状态指令（120~240字：直接告诉每个角色「今天你身上发生了什么变化、言行会有哪些具体表现」；必须紧扣素材指定的效果——今天全镇居民都换上了这套服装/变成了这种形态，把外观细节写具体；这段文字会被逐字注入每个角色的提示词，必须可直接执行，不要写成新闻报道腔）",
@@ -594,10 +615,10 @@ export function buildMaterialsPrompt(featured, withWorldState, worldLoot = null)
   const persona = buildCharacterPersona(featured, { variant: 'short', person: featured.display_name });
   const lootBlock = withWorldState && worldLoot ? `\n【今日镇内异变】
 今天全镇居民都受到同一个效果影响，world_state 必须围绕它展开，不得自创其他状态：
-- 类型：${worldLoot.kind === 'transform' ? '变身形态（每个居民变成一种拟人特殊形态）' : '服装（每个居民换上同一主题的服装）'}
+- 类型：${worldLoot.kind === 'transform' ? '变身形态（全镇每个居民都变成素材指定的同一种拟人形态）' : '服装（每个居民换上同一主题的服装）'}
 - 名称：${worldLoot.name}
 - 效果主题（外观细节以此为准）：${worldLoot.theme}
-${worldLoot.kind === 'transform' ? '- 具体变成什么形态由你结合<world_setting>决定，但全镇统一为同一种，且全天保持' : '- 服装的具体款式细节按上面的效果主题演绎，全镇统一'}` : '';
+${worldLoot.kind === 'transform' ? '- 形态已由编辑部锁定为上面的「名称」与「效果主题」：全镇每个居民都变成这同一种形态，器官组合严格按效果主题、不得增删或替换，禁止写成各家长不同器官；具体外观细节可在主题范围内演绎，全天保持一致' : '- 服装的具体款式细节按上面的效果主题演绎，全镇统一'}` : '';
 
   return `今天是 ${getLocalDateKey()}（${weekday}）。${weatherNote ? `今日天象参考：${weatherNote}。` : ''}
 主编，请基于<world_setting>演算今天的报纸${withWorldState ? '，并按格式附上今天的 world_state' : ''}。

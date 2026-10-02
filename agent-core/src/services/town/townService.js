@@ -406,13 +406,14 @@ async function purgeEpochLogs(db, currentEpoch, budgetMs) {
   }
   if (!st.evtDone) {
     for (;;) {
+      // rowid 在有 INTEGER PRIMARY KEY 的表上返回的是主键列名（seq），必须显式别名；
       // 经历账本（town_experiences）引用的事件是角色记忆的来源凭证，永久保留
-      const rows = db.prepare(`SELECT rowid, event_id FROM town_domain_events
+      const rows = db.prepare(`SELECT rowid AS rid, event_id FROM town_domain_events
         WHERE rowid > ? AND world_epoch < ? AND event_id NOT IN (SELECT event_id FROM town_experiences)
         ORDER BY rowid LIMIT 50000`).all(st.evtRowid, currentEpoch);
       if (!rows.length) { st.evtDone = true; break; }
-      st.evtRowid = rows[rows.length - 1].rowid;
-      const rids = rows.map(r => r.rowid).join(',');
+      st.evtRowid = rows[rows.length - 1].rid;
+      const rids = rows.map(r => r.rid).join(',');
       db.transaction(() => {
         db.prepare(`DELETE FROM town_event_deliveries WHERE event_id IN
           (SELECT event_id FROM town_domain_events WHERE rowid IN (${rids}))`).run();
