@@ -157,6 +157,7 @@
   /* ── 尺度：动效 ── */
   --dur-fast: 150ms;
   --dur-base: 220ms;
+  --dur-interaction: 300ms;
   --dur-slow: 350ms;
   --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);

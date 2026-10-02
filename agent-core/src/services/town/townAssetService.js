@@ -34,7 +34,10 @@ async function buildBuildingPromptViaLlm(p) {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const TOWN_ASSETS_DIR = path.resolve(__dirname, '..', '..', '..', 'data', 'town', 'assets');
+// 测试可把素材隔离到临时目录；正式运行仍使用默认素材库。
+export const TOWN_ASSETS_DIR = process.env.TOWN_ASSETS_DIR
+  ? path.resolve(process.env.TOWN_ASSETS_DIR)
+  : path.resolve(__dirname, '..', '..', '..', 'data', 'town', 'assets');
 
 /** 固定像素风基础串（整套素材共享 → 风格一致） */
 const PIXEL_BASE = 'pixel art, clean pixel edges, limited color palette, no anti-aliasing, no text, no watermark, no outline glow';

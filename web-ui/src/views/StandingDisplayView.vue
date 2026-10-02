@@ -1,5 +1,5 @@
 <template>
-  <main ref="stage" class="standing-display" :class="{ paused: hidden }" aria-label="角色立绘展示">
+  <main ref="stage" class="standing-display" :class="{ paused: hidden, interacting: interaction.enabled }" aria-label="角色立绘展示">
     <Transition name="standing-character" mode="out-in">
       <div v-if="shown.characterId" :key="shown.characterId" class="standing-actor">
         <div v-if="!shown.imageUrl" class="standing-empty" role="status">
@@ -7,23 +7,32 @@
           <p>请去角色卡的立绘管理内创建</p>
         </div>
         <Transition name="standing-reason">
-          <div v-if="bubble && shown.imageUrl" :key="bubble.id" class="standing-reason" :style="{ bottom: `${geometry.height + 30}px` }" role="status">
+          <div v-if="bubble && shown.imageUrl && !interaction.speaking" :key="bubble.id" class="standing-reason" :style="{ bottom: `${geometry.height + 30}px`, left: '50%' }" role="status">
             <svg class="thought-cloud" viewBox="0 0 320 140" preserveAspectRatio="none" aria-hidden="true"><path d="M40 112 C8 115 3 77 22 64 C6 40 32 15 59 24 C65 2 101 1 119 16 C140 0 169 5 179 16 C204 0 240 7 249 25 C280 15 306 39 294 61 C324 80 309 112 282 111 C271 137 234 135 215 122 C190 141 161 137 148 125 C120 143 91 134 82 121 C65 132 44 130 40 112 Z" /></svg>
             <span class="thought-text">{{ bubble.text }}</span>
             <i class="thought-dot thought-dot-large" aria-hidden="true" /><i class="thought-dot thought-dot-small" aria-hidden="true" />
           </div>
         </Transition>
-        <div :key="feedback" class="standing-feedback" :class="{ react: feedback > 0 }">
-          <div class="standing-sway"><div class="standing-breath">
+        <div :key="feedback" class="standing-feedback" :class="{ react: feedback > 0, interacting: interaction.enabled }">
+          <div class="touch-motion">
+          <div class="standing-sway">
+<div class="standing-breath">
             <Transition name="standing-expression">
-              <div v-if="shown.imageUrl" :key="shown.imageUrl" class="standing-image" :style="{ width: `${geometry.width}px`, height: `${geometry.height}px` }">
-                <img :src="shown.imageUrl" alt="" :style="geometry.image" draggable="false">
+              <div v-if="visual.imageUrl" :key="visual.imageUrl" class="standing-image" :style="{ width: `${geometry.width}px`, height: `${geometry.height}px` }">
+                <StandingTouchMotion :reaction="reaction" :contact="touchContact" :bounds="shown.bounds">
+                <img :src="visual.imageUrl" alt="" :style="geometry.image" draggable="false">
+                <StandingInteractionLayer ref="interactionLayer" v-if="interaction.enabled && shown.bounds && !reaction?.slot" :bounds="shown.bounds" :disabled="interaction.disabled" :generation="interaction.generation" @contact="touchContact=$event" @action="(action,point)=>interactionControls?.act(action,point)" />
+</StandingTouchMotion>
+                <StandingTouchRipple v-if="reaction && !reaction.passive" :key="reaction.id" :style="ripplePosition" />
               </div>
             </Transition>
-          </div></div>
+          </div>
+</div>
+</div>
         </div>
       </div>
     </Transition>
+    <StandingInteractionControls ref="interactionControls" :base="shown" :bubble-bottom="geometry.height + 42" :suspended="hidden || mobileSidebarOpen || pendingImage" @state="interaction=$event" @reaction="reaction=$event" />
   </main>
   <Transition name="scrim-fade">
     <div v-if="isMobile && mobileSidebarOpen" class="mobile-scrim" @click="mobileSidebarOpen = false"></div>
@@ -36,12 +45,21 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import Toast from '../components/Toast.vue'
 import Sidebar from '../components/Sidebar.vue'
+import StandingTouchRipple from '../components/standing/StandingTouchRipple.vue'
+import StandingTouchMotion from '../components/standing/StandingTouchMotion.vue'
+import StandingInteractionLayer from '../components/standing/StandingInteractionLayer.vue'
+import StandingInteractionControls from '../components/standing/StandingInteractionControls.vue'
 import { useChatStore } from '../stores/chat.js'
 import { createMobileSidebarBackHandler } from '../utils/mobileSidebarBack.js'
 import { getStandingDisplayState } from '../api/index.js'
 import { standingGeometry } from '../utils/standingGeometry.js'
+import { standingPresentationChanged } from '../utils/standingInteractionRules.js'
 import { onEvent, startUnifiedStream, stopUnifiedStream } from '../stores/unifiedStream.js'
 const stage = ref(null), shown = ref({}), bubble = ref(null), hidden = ref(document.hidden), feedback = ref(0)
+const interactionControls=ref(null),interaction=ref({enabled:false}),reaction=ref(null)
+const interactionLayer=ref(null),pendingImage=ref(false),touchContact=ref(null)
+const visual=computed(()=>reaction.value?.slot || shown.value)
+const ripplePosition=computed(()=>{const r=reaction.value,b=shown.value.bounds;if(!r?.point||r.slot||!b)return {};return {left:`${(r.point.x*b.imageWidth-b.x)/b.width*100}%`,top:`${(r.point.y*b.imageHeight-b.y)/b.height*100}%`}})
 const size = ref({ width: window.innerWidth, height: window.innerHeight })
 let latest = null, loadVersion = 0, observer
 const originalTitle = document.title
@@ -59,19 +77,22 @@ const handleAndroidBack = createMobileSidebarBackHandler({
     chat.loadCharacters().catch(() => displayToast.value?.show('角色列表加载失败，请稍后重试', 'error'))
   },
 })
-const geometry = computed(() => standingGeometry(shown.value.bounds, size.value.width, size.value.height))
+const geometry = computed(() => standingGeometry(visual.value.bounds, size.value.width, size.value.height,{vertical:180,horizontal:32}))
 function updateBubble(reason) {
   bubble.value = reason?.text?.trim() ? reason : null
 }
 async function apply(data) {
   if (latest?.epoch === data.epoch && latest.revision >= data.revision) return
+  if(standingPresentationChanged(shown.value,data))interactionControls.value?.clear()
   latest = data
   const ticket = ++loadVersion
+  pendingImage.value=true
   if (data.imageUrl && data.imageUrl !== shown.value.imageUrl) {
     try { await new Promise((resolve, reject) => { const img = new Image(); img.onload = resolve; img.onerror = reject; img.src = data.imageUrl }) }
     catch { data = { ...data, imageUrl: null } }
   }
   if (ticket !== loadVersion) return
+  pendingImage.value=false
   const previous = shown.value
   shown.value = data
   if (previous.characterId === data.characterId && previous.replyVersion !== undefined && data.replyVersion > previous.replyVersion) feedback.value++
@@ -111,6 +132,8 @@ onBeforeUnmount(() => {
 .standing-empty p { margin:0; }
 .standing-empty p:first-child { color:var(--text-primary); font-size:var(--fs-base); font-weight:600; }
 .standing-feedback { position:absolute; bottom:max(16px,env(safe-area-inset-bottom)); left:50%; width:0; }
+.touch-motion{position:relative;transform-origin:center bottom}
+@media(prefers-reduced-motion:reduce){.touch-motion,.standing-breath,.standing-sway,.standing-feedback{animation:none!important}}
 .standing-sway,.standing-breath { position:relative; transform-origin:center bottom; }
 .standing-image { position:absolute; bottom:0; left:0; transform:translateX(-50%); overflow:hidden; }
 .standing-image img { position:absolute; max-width:none; object-fit:fill; }

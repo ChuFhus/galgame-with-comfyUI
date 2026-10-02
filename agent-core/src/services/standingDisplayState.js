@@ -6,7 +6,7 @@ export function createStandingDisplay({ resolveImage, emit, persist = () => {}, 
   let latestTurn = null;
   function snapshot() {
     const image = state.characterId ? resolveImage(state.characterId, state.slotId) : null;
-    return { ...state, reason: state.reason, imageUrl: image?.image_url || null, bounds: image?.bounds || null, missingCount: image?.missingCount ?? 0 };
+    return { ...state, reason: state.reason, imageUrl: image?.image_url || null, bounds: image?.bounds || null, missingCount: image?.missingCount ?? 0, resolvedSlotId: image?.slot_id || null, imageVersion: image?.version ?? null };
   }
   function publish() { state.revision++; emit(snapshot()); }
   function select(characterId, clientId, sequence) {

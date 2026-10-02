@@ -15,12 +15,31 @@ const { config } = await import('../src/config.js');
 const { getStandingDisplay } = await import('../src/services/standingDisplay.js');
 const { STANDING_PREFIX } = await import('../src/services/expressionStandingPipeline.js');
 const db = getDb();
+const { TOUCH_PARTS, readTouchLines } = await import('../src/services/standingTouchLines.js');
 after(() => { db.close(); fs.rmSync(imageRoot, { recursive: true, force: true }); });
 
 function newCharacter() {
   const name = `fixture-${Math.random()}`;
   return Number(db.prepare(`INSERT INTO characters(name,display_name,base_prompt,standing_url) VALUES(?,?,?,'untouched.png')`).run(name, name, 'A girl with brown hair.').lastInsertRowid);
 }
+test('full set starts one dialogue job alongside rendering; partial retry does not generate dialogue', async () => {
+  const id=newCharacter();let release,entered,calls=0;
+  const started=new Promise(r=>entered=r);
+  const text=new Promise(r=>release=r);
+  const {jobId}=service.startStandingBatch(id,{}, {
+    touchLinesGenerator:async()=>{calls++;entered();return text;},
+    promptGenerator:async(_,slots)=>new Map(slots.map(s=>[s.id,'full body, default standing pose'])),
+    imageGenerator:async()=>{assert.equal(readTouchLines(db,id).status,'generating');throw new Error('fixture image failure');},
+  });
+  await started;
+  assert.equal((await waitForJob(jobId)).status,'partial_failed');
+  assert.equal(calls,1);assert.equal(readTouchLines(db,id).status,'generating');
+  release({lines:Object.fromEntries(Object.keys(TOUCH_PARTS).map(k=>[k,['第一句测试台词','第二句测试台词','第三句测试台词']]))});
+  for(let i=0;i<100&&readTouchLines(db,id).status==='generating';i++)await new Promise(r=>setTimeout(r,5));
+  assert.equal(readTouchLines(db,id).status,'ready');
+  const retry=service.startStandingBatch(id,{slotIds:['normal'],reusePrompts:true},{touchLinesGenerator:()=>assert.fail('single image must not call LLM'),imageGenerator:async()=>{throw new Error('fixture');}});
+  await waitForJob(retry.jobId);assert.equal(calls,1);
+});
 async function sourceImage() {
   return sharp({ create: { width: 32, height: 64, channels: 4, background: '#ffffff' } })
     .composite([{ input: await sharp({ create: { width: 12, height: 48, channels: 4, background: '#aa2244' } }).png().toBuffer(), left: 10, top: 8 }]).png().toBuffer();

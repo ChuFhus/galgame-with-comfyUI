@@ -28,6 +28,7 @@ import { cleanupInterruptedChestItems } from '../services/itemLifecycle.js';
 import { migrateWeatherHourlySchema } from './weatherHourlySchema.js';
 
 import { migrateExpressionStandings, recoverExpressionStandingJobs } from './expressionStandingSchema.js';
+import { migrateStandingInteractions } from './standingInteractionSchema.js';
 
 let db;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -864,6 +865,7 @@ function initSchema(db) {
   // 保留完整预报时间；历史天气缓存不推断日期或回填。
   migrateWeatherHourlySchema(db);
   migrateExpressionStandings(db);
+  migrateStandingInteractions(db);
 
   // 迁移: characters 表新增 next_moment_at 列
   migrateMomentsSchema(db);

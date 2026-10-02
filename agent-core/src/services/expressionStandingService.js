@@ -16,6 +16,8 @@ import { postProcessAsset } from './town/assetPostProcess.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { getStandingDisplay } from './standingDisplay.js';
 import { parseStandingPrompts, runStandingBatch, frameStandingPrompt } from './expressionStandingPipeline.js';
+import { buildTouchLineMessages, readTouchLines, startTouchLines } from './standingTouchLines.js';
+import { getWorldIntegrationRule } from '../builtinRules.js';
 
 const CATEGORY = 'expression_standing';
 const busyCharacters = new Set();
@@ -49,6 +51,7 @@ export function listExpressionStandings(id) {
   character(id);
   const rows = getDb().prepare('SELECT * FROM character_expression_standings WHERE character_id=?').all(id);
   return {
+    touchLines: readTouchLines(getDb(), id),
     slots: standingSlots().map(s => {
       const row = rows.find(r => r.slot_id === s.id);
       return { ...s, ...row, generation: JSON.parse(row?.config_json || '{}'), bounds: JSON.parse(row?.bounds_json || 'null') };
@@ -111,7 +114,26 @@ async function commitImage(id, slot, buffer, { removeBg = true, source = true } 
   notify(id);
 }
 
-export function startStandingBatch(id, { slotIds, requirement = '', reusePrompts = false } = {}, { promptGenerator = generateStandingPrompts, imageGenerator = generateImageRaw } = {}) {
+export function generateStandingTouchLines(char) {
+  const relationship=getDb().prepare('SELECT relationship_text, affinity, is_oath FROM user_relationships WHERE character_id=?').get(char.id);
+  const messages=buildTouchLineMessages(char, {
+    relationship,userName:config.user.nickname || '用户',
+    systemRules:getSystemRulesWithWorld({roleplay:false}),
+    worldRule:getWorldSetting()?getWorldIntegrationRule('interaction'):'当前未启用世界观，按角色资料与本次任务创作，不补造世界设定。',
+  });
+  return chatSync(messages, { temperature: 0.8, max_tokens: 3000, response_format: { type: 'json_object' }, label: '立绘触摸台词', signal: AbortSignal.timeout(90000), timeout: 90000, retries: 0, maxRetries: 0, freeEggFailover: false });
+}
+
+export function regenerateStandingTouchLines(id, expectedVersion) {
+  const char=character(id),db=getDb(),current=readTouchLines(db,char.id);
+  if(current.status==='generating')throw fail('台词正在生成，请稍候',409);
+  if(expectedVersion!==current.version)throw fail('台词已更新，请重新读取',409);
+  startTouchLines({db,character:char,generate:generateStandingTouchLines,emit:broadcast})
+    ?.catch(error=>console.warn('[standing-touch] 台词保存失败:',error.message));
+  return readTouchLines(db,char.id);
+}
+
+export function startStandingBatch(id, { slotIds, requirement = '', reusePrompts = false } = {}, { promptGenerator = generateStandingPrompts, imageGenerator = generateImageRaw, touchLinesGenerator = generateStandingTouchLines } = {}) {
   id = Number(id); assertIdle(id);
   const char = character(id);
   const all = standingSlots();
@@ -182,6 +204,13 @@ export function startStandingBatch(id, { slotIds, requirement = '', reusePrompts
   };
   control.run = run;
   queue = queue.then(run, run);
+  if (slots.length === all.length && !reusePrompts) {
+    // A text-task startup/storage failure must not strand the queued image job.
+    try {
+      startTouchLines({ db, character: char, generate: touchLinesGenerator, emit: broadcast })
+        ?.catch(error => console.warn('[standing-touch] 后台台词任务保存失败:', error.message));
+    } catch (error) { console.warn('[standing-touch] 后台台词任务启动失败:', error.message); }
+  }
   return { jobId };
 }
 

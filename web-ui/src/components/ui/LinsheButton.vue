@@ -6,6 +6,7 @@
       `ls-btn--${size}`,
       {
         'ls-btn--block': block,
+        'ls-btn--touch': touchTarget,
         'ls-btn--active': active,
         'ls-btn--tone-danger': tone === 'danger',
         'ls-btn--jelly-enter': jellyPhase === 'enter',
@@ -33,6 +34,8 @@ defineProps({
   variant: { type: String, default: 'secondary' },
   /** sm / md / lg */
   size: { type: String, default: 'md' },
+  /** Keep the existing skin while reserving an accessible touch target. */
+  touchTarget: { type: Boolean, default: false },
   type: { type: String, default: 'button' },
   disabled: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
@@ -262,6 +265,8 @@ const endJelly = (event) => {
 /* ── 键盘焦点 ── */
 .ls-btn:focus-visible { outline: 3px solid rgba(var(--accent-rgb), 0.3); outline-offset: 2px; }
 .ls-btn:focus:not(:focus-visible) { outline: none; }
+
+.ls-btn.ls-btn--touch { min-width:44px; min-height:44px; }
 
 /* ── 减弱动效 ── */
 @media (prefers-reduced-motion: reduce) {

@@ -24,6 +24,8 @@ let _conn = null
 let _reconnectTimer = null
 let _stableTimer = null
 let _started = false
+let _connected = false
+export const isUnifiedStreamConnected = () => _connected
 let _backoff = BACKOFF_INITIAL
 
 /** Map<eventType, Set<handler>> */
@@ -51,6 +53,7 @@ export const offEvent = (eventType, handler) => {
 }
 
 function _dispatch(eventType, data) {
+  if (eventType === 'connected') _connected = true
   const handlers = _handlers.get(eventType)
   if (handlers) {
     for (const fn of handlers) {
@@ -129,7 +132,9 @@ function _onStable() {
 
 /** 断开后立即调度重连（指数退避 1s→2s→4s→...→30s） */
 function _scheduleReconnect() {
+  _connected = false
   if (!_started) return
+  _dispatch('disconnected', {})
   if (_reconnectTimer) clearTimeout(_reconnectTimer)
   if (_stableTimer) { clearTimeout(_stableTimer); _stableTimer = null }
 
@@ -152,6 +157,7 @@ export function startUnifiedStream() {
 
 /** 停止统一 SSE 连接（NavBar onUnmounted 调用） */
 export function stopUnifiedStream() {
+  _connected = false
   _started = false
   _backoff = BACKOFF_INITIAL
   if (_conn) { _conn.close(); _conn = null }

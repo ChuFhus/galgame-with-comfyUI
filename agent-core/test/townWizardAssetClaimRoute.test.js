@@ -6,9 +6,17 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 
 process.env.DB_PATH = ':memory:';
-// 向导存档指到临时文件，测试不碰 agent-core/data/town/init-state.json
-const STATE_FILE = path.join(os.tmpdir(), `town-wizard-claim-route-state-${process.pid}.json`);
+// 数据库、向导存档和图片全部隔离；每次运行独占目录，结束（含断言失败）后清理。
+const TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'town-wizard-claim-route-'));
+const STATE_FILE = path.join(TEST_DIR, 'init-state.json');
+const ASSETS_DIR = path.join(TEST_DIR, 'assets');
 process.env.TOWN_INIT_STATE_PATH = STATE_FILE;
+process.env.TOWN_ASSETS_DIR = ASSETS_DIR;
+after(() => {
+  assert.equal(path.dirname(TEST_DIR), path.resolve(os.tmpdir()));
+  assert.ok(path.basename(TEST_DIR).startsWith('town-wizard-claim-route-'));
+  fs.rmSync(TEST_DIR, { recursive: true, force: true });
+});
 
 const require = createRequire(import.meta.url);
 const sharp = require('sharp');
@@ -119,7 +127,7 @@ function setup() {
 after(() => {
   server.close();
   closeDb();
-  if (fs.existsSync(STATE_FILE)) fs.unlinkSync(STATE_FILE);
+  globalThis.fetch = realFetch;
 });
 
 test('POST /api/town/assets 生成成功后把素材认领进本镇名单', async () => {
@@ -137,6 +145,7 @@ test('POST /api/town/assets 生成成功后把素材认领进本镇名单', asyn
   const { asset } = await res.json();
   assert.ok(asset?.id, '素材应生成成功');
   assert.equal(asset.status, 'ready');
+  assert.ok(fs.existsSync(path.join(ASSETS_DIR, path.basename(asset.image_path))), '图片必须落在本次测试临时目录');
 
   assert.ok(persistedAssetIds().includes(asset.id), '路由成功后必须把素材记进本镇名单');
   assert.equal(persistedAssetIds().includes(oldId), false, '老镇素材不该被顺带认领');
@@ -151,6 +160,7 @@ test('POST /api/town/assets/:id/regenerate 同样认领进本镇名单', async (
   assert.equal(res.status, 200);
   const { asset } = await res.json();
   assert.equal(asset?.id, reusedId);
+  assert.ok(fs.existsSync(path.join(ASSETS_DIR, path.basename(asset.image_path))), '重新生成的图片必须落在本次测试临时目录');
 
   assert.ok(persistedAssetIds().includes(reusedId), '重生成成功后也必须认领');
 });
