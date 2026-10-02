@@ -16,7 +16,7 @@ import { postProcessAsset } from './town/assetPostProcess.js';
 import { broadcast } from './unifiedStreamBus.js';
 import { getStandingDisplay } from './standingDisplay.js';
 import { parseStandingPrompts, runStandingBatch, frameStandingPrompt } from './expressionStandingPipeline.js';
-import { buildTouchLineMessages, readTouchLines, startTouchLines } from './standingTouchLines.js';
+import { buildTouchLineMessages, readTouchLines, startTouchLines, hasTouchLines } from './standingTouchLines.js';
 import { getWorldIntegrationRule } from '../builtinRules.js';
 
 const CATEGORY = 'expression_standing';
@@ -64,6 +64,42 @@ export function listExpressionStandings(id) {
 function snapshotConfig(char) {
   return structuredClone({ ...captureImageGenerationConfig('portrait'), artist: charArtistOverride(char) ?? config.comfyui.momentsArtist, loras: parseCharacterLoras(char), ...(char.custom_workflow ? { customWorkflow: char.custom_workflow } : {}), width: 768, height: 1536 });
 }
+/** One snapshot for the tavern manager, including characters with no saved slots. */
+export function listStandingOverview() {
+  const db = getDb();
+  const slots = standingSlots();
+  const images = new Map();
+  for (const row of db.prepare('SELECT character_id,slot_id FROM character_expression_standings WHERE image_url IS NOT NULL AND image_url != ?').all('')) {
+    if (!images.has(row.character_id)) images.set(row.character_id, new Set());
+    images.get(row.character_id).add(row.slot_id);
+  }
+  return db.prepare(`SELECT c.id, j.status AS jobStatus, j.error AS error FROM characters c
+    LEFT JOIN expression_standing_jobs j ON j.id = (
+      SELECT id FROM expression_standing_jobs WHERE character_id=c.id ORDER BY created_at DESC,rowid DESC LIMIT 1
+    ) ORDER BY c.id`).all().map(row => {
+    const missingSlotIds = slots.filter(s => !images.get(row.id)?.has(s.id)).map(s => s.id);
+    const touch = readTouchLines(db,row.id);
+    return { ...row, hasTouchLines:hasTouchLines(touch), touchStatus:touch.status, count: slots.length - missingSlotIds.length, total: slots.length, missingSlotIds, busy: busyCharacters.has(row.id) };
+  });
+}
+
+export function startAllStandingBatches({ mode, requirement = '' } = {}, dependencies) {
+  if (!['all', 'missing'].includes(mode)) throw fail('请选择全部重新生成或补齐缺失立绘');
+  const result = { started: [], skippedBusy: [], skippedComplete: [], failed: [] };
+  for (const row of listStandingOverview()) {
+    if (row.busy) { result.skippedBusy.push(row.id); continue; }
+    if (mode === 'missing' && !row.missingSlotIds.length) { result.skippedComplete.push(row.id); continue; }
+    try {
+      const task = startStandingBatch(row.id, {
+        ...(mode === 'missing' ? { slotIds: row.missingSlotIds } : {}),
+        requirement, reusePrompts: false,
+      }, dependencies);
+      result.started.push({ characterId: row.id, ...task });
+    } catch (error) { result.failed.push({ characterId: row.id, error: error.message }); }
+  }
+  return result;
+}
+
 export async function generateStandingPrompts(char, slots, requirement, persona = buildCharacterPersona(char, { variant: 'short', person: char.display_name })) {
   const messages = buildStandingPromptMessages({
     systemRules: getWorldSetting() ? getSystemRulesWithWorld({ roleplay: false }) : getSystemRules({ roleplay: false }),
@@ -204,7 +240,7 @@ export function startStandingBatch(id, { slotIds, requirement = '', reusePrompts
   };
   control.run = run;
   queue = queue.then(run, run);
-  if (slots.length === all.length && !reusePrompts) {
+  if (slots.length === all.length && !reusePrompts && !hasTouchLines(readTouchLines(db,id))) {
     // A text-task startup/storage failure must not strand the queued image job.
     try {
       startTouchLines({ db, character: char, generate: touchLinesGenerator, emit: broadcast })

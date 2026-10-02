@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-export const TOUCH_PARTS = { head: '头顶', face: '脸', shoulder: '肩颈', hand: '手', chest: '胸口', belly: '肚子', butt: '屁股和下体', thigh: '大腿', calf: '小腿', foot: '脚' };
+export const TOUCH_PARTS = { head: '头顶', face: '脸', shoulder: '肩颈', hand: '手', chest: '胸部和乳房', belly: '肚子', butt: '屁股和下体', thigh: '大腿', calf: '小腿', foot: '脚' };
 
 export function buildTouchLineMessages(character, { systemRules = '', worldRule = '', relationship = null, userName = '用户' } = {}) {
   const example = Object.fromEntries(Object.entries(TOUCH_PARTS).map(([key, label]) => [key,
@@ -17,17 +17,11 @@ export function buildTouchLineMessages(character, { systemRules = '', worldRule 
 
 export function parseTouchLines(raw) {
   const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
-  if (!value || Object.keys(value).join() !== 'lines' || !value.lines || Array.isArray(value.lines)) throw new Error('触摸台词 JSON 格式无效');
-  const keys = Object.keys(TOUCH_PARTS);
-  const missing = keys.filter(k => !Object.hasOwn(value.lines, k));
-  const extra = Object.keys(value.lines).filter(k => !keys.includes(k));
-  if (missing.length || extra.length) throw new Error(`触摸台词字段不匹配${missing.length ? `；缺少：${missing.map(k => `${k}（${TOUCH_PARTS[k]}）`).join('、')}` : ''}${extra.length ? `；多余：${extra.join('、')}` : ''}`);
-  return Object.fromEntries(keys.map(key => {
-    const list = value.lines[key];
-    if (!Array.isArray(list) || list.length !== 3 || list.some(s => typeof s !== 'string' || [...s.trim()].length < 4 || [...s.trim()].length > 32 || /[\r\n]/.test(s))) throw new Error(`${TOUCH_PARTS[key]}需要三句 4–32 字的台词`);
-    const trimmed = list.map(s => s.trim());
-    if (new Set(trimmed).size !== 3) throw new Error(`${TOUCH_PARTS[key]}台词不能重复`);
-    return [key, trimmed];
+  const source = value?.lines ?? value;
+  return Object.fromEntries(Object.keys(TOUCH_PARTS).map(key => {
+    const item = source?.[key];
+    const list = Array.isArray(item) ? item : typeof item === 'string' ? [item] : [];
+    return [key, list.filter(s => typeof s === 'string').map(s => s.trim()).filter(Boolean)];
   }));
 }
 
@@ -77,4 +71,27 @@ export function startTouchLines({ db, character, generate, emit = () => {} }) {
     const result = db.prepare("UPDATE character_standing_touch_lines SET status='failed',error=?,updated_at=CURRENT_TIMESTAMP WHERE character_id=? AND request_id=?").run(String(error.message || '台词生成失败').slice(0, 200), id, requestId);
     if (result.changes) notify();
   });
+}
+
+export function hasTouchLines(state) {
+  return Object.values(state?.lines || {}).some(list => Array.isArray(list) && list.some(text => typeof text === 'string' && text.trim()));
+}
+
+export function fillMissingTouchLines({ db, generate, emit = () => {} }) {
+  const result = { started: 0, skipped: 0 };
+  let queue = Promise.resolve();
+  for (const character of db.prepare('SELECT * FROM characters ORDER BY id').all()) {
+    const state = readTouchLines(db, character.id);
+    if (hasTouchLines(state) || state.status === 'generating') { result.skipped++; continue; }
+    const task = startTouchLines({ db, character, emit, generate: char => {
+      const next = queue.then(() => {
+        if (!db.prepare('SELECT id FROM characters WHERE id=?').get(char.id)) throw new Error('角色已删除');
+        return generate(char);
+      });
+      queue = next.catch(() => {});
+      return next;
+    } });
+    if (task) { result.started++; task.catch(error => console.warn('[standing-touch]', error.message)); }
+  }
+  return result;
 }

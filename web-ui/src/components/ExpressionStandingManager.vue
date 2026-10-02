@@ -46,7 +46,7 @@ v-if="editing.image_url" :key="editing.image_url" :src="editing.image_url" :asse
           <linshe-button variant="primary" :disabled="locked || !targets.length" :loading="submitting" @click="generate">{{ paused ? '任务已停止' : busy ? '正在生成…' : '一键生成立绘' }}</linshe-button>
           <linshe-button v-if="busy || job?.resumable" size="sm" :loading="controlling" :disabled="job?.status === 'stopping' || controlling" @click="controlTask">{{ paused || job?.resumable ? '继续任务' : job?.status === 'stopping' ? '正在停止…' : '停止任务' }}</linshe-button>
           <p v-if="job" class="es-progress" role="status">{{ jobText }} <span v-if="job.error"> · {{ job.error }}</span></p>
-          <linshe-button class="es-touch-manage" size="sm" @click="showTouchLines=true">反馈台词管理</linshe-button>
+          <linshe-button class="es-touch-manage" size="sm" @click="showTouchLines=true">触摸台词管理</linshe-button>
         </div>
         <div class="es-touch-row"><p class="es-touch-status" role="status">{{ touchLineText }}</p></div>
         <div class="es-strip">
@@ -98,7 +98,7 @@ const confirm = inject('confirm', async () => false)
 const slots = ref([]), jobs = ref([]), busy = ref(false)
 const showTouchLines=ref(false)
 const touchLines = ref({status:"empty"})
-const touchLineText = computed(() => ({empty:"全身触摸默认开启；生成整套立绘时同步生成 30 句专属反应。",generating:"正在后台生成全身触摸台词，不影响立绘出图…",ready:"全身触摸台词已就绪 · 10 个部位，每处 3 句",failed:"触摸台词生成失败；保留已有台词，下次生成整套立绘时重试。"})[touchLines.value.status])
+const touchLineText = computed(() => ({empty:"全身触摸默认开启；没有台词时，生成整套立绘会同步生成专属反应。",generating:"正在后台生成全身触摸台词，不影响立绘出图…",ready:"全身触摸台词已就绪 · 10 个部位，每处 3 句",failed:"触摸台词生成失败；保留已有台词，下次生成整套立绘时重试。"})[touchLines.value.status])
 const requirement = ref(''), error = ref(''), submitting = ref(false), working = ref('')
 const editingId = ref(null), prompt = ref(''), generation = ref({}), showPrompt = ref(false), fileInput = ref(null)
 const editing = computed({ get: () => slots.value.find(s => s.id === editingId.value), set: value => { editingId.value = value?.id || null } })

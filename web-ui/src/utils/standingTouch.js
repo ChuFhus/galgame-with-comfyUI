@@ -24,7 +24,8 @@ export function createTouchReplyEngine({now=()=>performance.now(),random=Math.ra
       if(!TOUCH_LABELS[part]||now()-lastAt<650)return null
       lastAt=now()
       const all=Array.isArray(lines?.[part])?lines[part].filter(s=>typeof s==='string'&&s.trim()):[]
-      const pool=all.length>1?all.filter(s=>s!==previous[part]):all
+      const alternatives=all.filter(s=>s!==previous[part])
+      const pool=alternatives.length?alternatives:all
       const text=pool.length?pool[Math.min(pool.length-1,Math.floor(Math.max(0,random())*pool.length))]:`轻轻碰了碰${TOUCH_LABELS[part]}。`
       previous[part]=text
       return {text,part,motion:['head','hand','shoulder'].includes(part)?'pat':'poke',amplitude:.4,variant:Math.floor(random()*3),id:now()}

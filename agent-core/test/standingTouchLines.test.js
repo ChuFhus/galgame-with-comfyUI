@@ -2,23 +2,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { migrateStandingInteractions } from '../src/db/standingInteractionSchema.js';
-import { TOUCH_PARTS, buildTouchLineMessages, parseTouchLines, readTouchLines, startTouchLines, saveTouchLines } from '../src/services/standingTouchLines.js';
+import { TOUCH_PARTS, buildTouchLineMessages, parseTouchLines, readTouchLines, startTouchLines, saveTouchLines, fillMissingTouchLines, hasTouchLines } from '../src/services/standingTouchLines.js';
 const valid=()=>({lines:Object.fromEntries(Object.keys(TOUCH_PARTS).map(k=>[k,['第一句测试台词。','第二句测试台词。','第三句测试台词。']]))});
 function fixture(t){const db=new Database(':memory:');t.after(()=>db.close());db.pragma('foreign_keys=ON');db.exec('CREATE TABLE characters(id INTEGER PRIMARY KEY);INSERT INTO characters VALUES(1);INSERT INTO characters VALUES(2);');migrateStandingInteractions(db);return db;}
-test('one complete JSON example and strict ten-part, three-line validation',()=>{
+test('one complete JSON example and tolerant JSON normalization',()=>{
  assert.deepEqual(Object.keys(parseTouchLines(JSON.stringify(valid()))),Object.keys(TOUCH_PARTS));
  const prompt=buildTouchLineMessages({display_name:'测试',base_prompt:'谨慎温柔'},{systemRules:'规则与世界观',worldRule:'世界观强化'});
  assert.deepEqual(prompt.map(m=>m.role),['system','system','system','system','user']);
  assert.equal(prompt[0].content,'规则与世界观');assert.equal(prompt[1].content,'世界观强化');assert.match(prompt[3].content,/谨慎温柔/);
  for(const key of Object.keys(TOUCH_PARTS))assert.ok(prompt[2].content.includes(`"${key}"`));
- for(const mutate of [v=>delete v.lines.head,v=>v.lines.face.push('多余的第四句'),v=>v.lines.face[0]='短',v=>v.lines.face[1]=v.lines.face[0],v=>v.lines.face[0]='带有\n换行台词',v=>v.extra=true]){const v=valid();mutate(v);assert.throws(()=>parseTouchLines(v));}
+ for(const mutate of [v=>delete v.lines.head,v=>v.lines.face.push('多余的第四句'),v=>v.lines.face[0]='短',v=>v.lines.face[1]=v.lines.face[0],v=>v.lines.face[0]='带有\n换行台词',v=>v.extra=true]){const v=valid();mutate(v);assert.doesNotThrow(()=>parseTouchLines(v));}
 });
 test('manual line edits validate and reject stale or generating versions',async t=>{
  const db=fixture(t),events=[];
  const first=saveTouchLines({db,id:1,lines:valid().lines,expectedVersion:null,emit:(...e)=>events.push(e)});
  assert.equal(first.status,'ready');assert.ok(first.version);assert.equal(events.length,1);
  assert.throws(()=>saveTouchLines({db,id:1,lines:valid().lines,expectedVersion:null}),{status:409});
- assert.throws(()=>saveTouchLines({db,id:1,lines:{},expectedVersion:first.version}),{status:400});
+ assert.throws(()=>parseTouchLines("{broken"),SyntaxError);
  const updated=valid().lines;updated.head[0]='这里是手动修改的台词。';
  const second=saveTouchLines({db,id:1,lines:updated,expectedVersion:first.version});
  assert.notEqual(second.version,first.version);assert.equal(readTouchLines(db,1).lines.head[0],updated.head[0]);
@@ -33,7 +33,7 @@ test('background task deduplicates in-flight work and preserves old lines on fai
  const task=startTouchLines({db,character,generate:()=>{calls++;return new Promise(r=>release=r)}});
  assert.equal(readTouchLines(db,1).status,'generating');
  assert.equal(startTouchLines({db,character,generate:()=>assert.fail('duplicate call')}),null);
- await Promise.resolve();assert.equal(calls,1);release({lines:{}});await task;
+ await Promise.resolve();assert.equal(calls,1);release("{broken");await task;
  assert.equal(readTouchLines(db,1).status,'failed');assert.deepEqual(readTouchLines(db,1).lines,first);
  assert.equal(readTouchLines(db,2).status,'empty');
  await startTouchLines({db,character,generate:async()=>valid()});assert.equal(readTouchLines(db,1).status,'ready');
@@ -66,7 +66,7 @@ test('prompt pins merged shoulder key and parser identifies malformed fields',()
  assert.deepEqual(Object.keys(example.lines),Object.keys(TOUCH_PARTS));
  assert.ok(Object.values(example.lines).every(lines=>lines.length===3));
  const value=valid();value.lines.neck_shoulder=value.lines.shoulder;delete value.lines.shoulder;
- assert.throws(()=>parseTouchLines(value),/缺少：shoulder（肩颈）.*多余：neck_shoulder/);
+ assert.deepEqual(parseTouchLines(value).shoulder,[]);
 });
 
 test('relationship context stays in final user message and preserves zero affinity',()=>{
@@ -81,4 +81,22 @@ test('variable relationship data leaves the system prefix unchanged',()=>{
  const next=buildTouchLineMessages(character,{relationship:{affinity:99}});
  assert.deepEqual(first.slice(0,4),next.slice(0,4));assert.notEqual(first[4].content,next[4].content);
  assert.equal(first[0].content,buildTouchLineMessages({name:'其他角色'})[0].content);
+});
+
+test('valid JSON accepts long, duplicate and variable-length lines',()=>{
+ const long='长'.repeat(80);
+ assert.deepEqual(parseTouchLines(JSON.stringify({lines:{face:['嗯',long,'嗯','换行\n台词',null],head:'你好'}})).face,['嗯',long,'嗯','换行\n台词']);
+ for(const value of ['null','[]','42','{}'])assert.doesNotThrow(()=>parseTouchLines(value));
+});
+
+test('bulk fill skips existing dialogue and in-flight tasks without duplicate calls',async t=>{
+ const db=fixture(t);await startTouchLines({db,character:{id:1},generate:async()=>valid()});
+ const before=readTouchLines(db,1);let calls=0,release;
+ const generate=()=>{calls++;return new Promise(resolve=>release=resolve)};
+ assert.deepEqual(fillMissingTouchLines({db,generate}),{started:1,skipped:1});
+ assert.deepEqual(fillMissingTouchLines({db,generate}),{started:0,skipped:2});
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,1);
+ release(valid());await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(hasTouchLines(readTouchLines(db,2)),true);assert.deepEqual(readTouchLines(db,1),before);
+ assert.equal(hasTouchLines({lines:{face:[]}}),false);
 });

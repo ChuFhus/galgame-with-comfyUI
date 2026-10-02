@@ -1,14 +1,17 @@
 import { Router } from 'express';
 import { getDb } from '../db/index.js';
-import { listExpressionStandings, startStandingBatch, controlStandingBatch, updateStandingPrompt, editStandingImage, deleteStanding } from '../services/expressionStandingService.js';
+import { listExpressionStandings, listStandingOverview, startAllStandingBatches, startStandingBatch, controlStandingBatch, updateStandingPrompt, editStandingImage, deleteStanding } from '../services/expressionStandingService.js';
 import { getStandingDisplay } from '../services/standingDisplay.js';
 import { createStandingInteractionService } from '../services/standingInteractionService.js';
 import { imageUrlExists } from '../services/imagePaths.js';
 import { broadcast } from '../services/unifiedStreamBus.js';
-import { readTouchLines, saveTouchLines } from '../services/standingTouchLines.js';
-import { regenerateStandingTouchLines } from '../services/expressionStandingService.js';
+import { readTouchLines, saveTouchLines, fillMissingTouchLines } from '../services/standingTouchLines.js';
+import { regenerateStandingTouchLines, generateStandingTouchLines } from '../services/expressionStandingService.js';
 
 const router = Router();
+router.get('/expression-standings/overview', (_req, res) => res.json({ characters: listStandingOverview() }));
+router.post('/expression-standings/generate', (req, res) => res.status(202).json(startAllStandingBatches(req.body)));
+router.post('/expression-standings/touch-lines/fill', (_req,res)=>res.status(202).json(fillMissingTouchLines({db:getDb(),generate:generateStandingTouchLines,emit:broadcast})));
 const base = '/characters/:id/expression-standings';
 const interactions = () => createStandingInteractionService({ db: getDb(), imageExists: imageUrlExists, emit: broadcast });
 router.get(`${base}/touch-lines`, (req,res)=>{

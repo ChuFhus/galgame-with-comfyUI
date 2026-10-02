@@ -5,6 +5,7 @@ import {TOUCH_PARTS} from '../../agent-core/src/services/standingTouchLines.js'
 test('all ten parts match the generated schema; default zones survive large padding',()=>{
  assert.deepEqual(Object.keys(TOUCH_LABELS),Object.keys(TOUCH_PARTS))
  assert.equal(TOUCH_LABELS.butt,'臀侧');assert.equal(TOUCH_PARTS.butt,'屁股和下体')
+ assert.equal(TOUCH_LABELS.chest,'胸口');assert.equal(TOUCH_PARTS.chest,'胸部和乳房')
  for(const b of [{x:0,y:0,width:400,height:800,imageWidth:400,imageHeight:800},{x:300,y:200,width:400,height:800,imageWidth:1400,imageHeight:1600}]){
   const p=(x,y)=>({x:(b.x+x*b.width)/b.imageWidth,y:(b.y+y*b.height)/b.imageHeight})
   for(const z of TOUCH_ZONES)assert.equal(touchPartAt(p(z.x+z.w/2,z.y+z.h/2),b),z.part)

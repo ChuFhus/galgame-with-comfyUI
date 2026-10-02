@@ -176,7 +176,19 @@
           <span>表情包管理</span>
         </div>
 
-      <!-- 招募卡片：永远在第一格 -->
+      <div key="standing-manage" class="char-card emoji-manage-card standing-manage-card" role="button" tabindex="0" @click="showStandingManager = true" @keydown.enter.prevent="showStandingManager = true" @keydown.space.prevent="showStandingManager = true">
+        <div class="emoji-manage-icon">
+          <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="10" r="6" />
+            <circle cx="10" cy="9" r=".9" fill="currentColor" stroke="none" />
+            <path d="m14 8.5 1.5 1M10 12.5q2 2 4 0" stroke-width="1.7" />
+            <path d="M4 25v-2a7 7 0 0 1 7-7h2c4 0 5 4 8 4s5-3 5-6M8 24v4h10v-5M24 5h6M27 2v6" />
+          </svg>
+        </div>
+        <span>立绘管理</span>
+      </div>
+
+      <!-- 招募卡片：管理入口之后 -->
       <div key="recruit" class="char-card recruit-card" @click="openRecruit">
         <div class="recruit-plus">+</div>
         <span>招募</span>
@@ -625,6 +637,7 @@
     <NewspaperModal v-model="showNewspaper" @read="onNewspaperRead" />
 
       <EmojiManagerModal v-if="showEmojiManager" :characters="sortedCharacters" @close="showEmojiManager = false" />
+      <StandingManagerModal :open="showStandingManager" :characters="sortedCharacters" @close="showStandingManager = false" />
   </div>
 </template>
 
@@ -643,6 +656,7 @@ import MailboxModal from '../components/MailboxModal.vue'
 import BackpackModal from '../components/BackpackModal.vue'
 import NewspaperModal from '../components/NewspaperModal.vue'
 import EmojiManagerModal from '../components/EmojiManagerModal.vue'
+import StandingManagerModal from '../components/StandingManagerModal.vue'
 import AppearanceRefineModal from '../components/AppearanceRefineModal.vue'
 import LinsheButton from '../components/ui/LinsheButton.vue'
 import LinsheInput from '../components/ui/LinsheInput.vue'
@@ -660,6 +674,7 @@ const newspaperStore = useNewspaperStore()
 const showMailbox = ref(false)
 const showBackpack = ref(false)
 const showEmojiManager = ref(false)
+const showStandingManager = ref(false)
 const mailboxUnread = computed(() => mailboxStore.unreadCount)
 const backpackChestReady = computed(() => backpackStore.chestReady)
 
@@ -2306,6 +2321,7 @@ onMounted(async () => {
   border-color: var(--accent);
   background: rgba(var(--accent-rgb), 0.06);
 }
+.standing-manage-card { border-color: var(--border-strong); text-align: center; cursor: pointer; }
 .emoji-manage-icon {
   width: 34px; height: 34px;
   color: var(--accent);
