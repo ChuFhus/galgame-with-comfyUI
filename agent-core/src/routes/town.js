@@ -26,7 +26,7 @@ import {
   getTownState, movePlayerTo, movePlayerDir, getEncounterMessages,
   setTownCharacterEnabled, setTownCharacterCapabilities, ensureCharacterNpcProfile, listTownCharacters, forceTick, setNpcEnabled, reloadTown,
   generateCharacterSprites, ensureCharacterTownAssets, getTownSettings, updateTownSettings, resetWorld, resetMap,
-  holdTownActor, releaseTownActor, touchTownViewer,
+  holdTownActor, releaseTownActor, carryTownActor, touchTownViewer,
   getTownMaps, travelPlayer, reloadMap,
 } from '../services/town/townService.js';
 import {
@@ -138,6 +138,23 @@ router.post('/actors/:id/hold', (req, res) => {
 router.post('/actors/:id/release', (req, res) => {
   if (!checkMovementScope(req.body || {}, res)) return;
   res.json(releaseTownActor(req.params.id));
+});
+
+router.post('/actors/:id/carry', (req, res) => {
+  const body = req.body || {};
+  if (!Number.isSafeInteger(body.mapId) || typeof body.worldId !== 'string'
+      || !Number.isSafeInteger(body.worldEpoch)) {
+    return res.status(400).json({ code: 'INVALID_WORLD_SCOPE', error: '请先重新读取小镇' });
+  }
+  if (!checkMovementScope(body, res)) return;
+  if (!['begin', 'renew', 'drop', 'cancel'].includes(body.operation)) {
+    return res.status(400).json({ error: '无效的拎起操作' });
+  }
+  const result = carryTownActor(req.params.id, {
+    token: body.token, operation: body.operation, x: body.x, y: body.y,
+  });
+  if (!result.ok) return res.status(409).json(result);
+  res.json(result);
 });
 
 router.get('/encounters/:id/messages', (req, res) => {

@@ -1754,6 +1754,10 @@ export function releaseTownActor(actorId, { worldId, worldEpoch } = {}) {
   return jsonRequest(`${BASE}/town/actors/${encodeURIComponent(actorId)}/release`, townJson('POST', { worldId, worldEpoch }))
 }
 
+export function carryTownActor(actorId, body) {
+  return jsonRequest(`${BASE}/town/actors/${encodeURIComponent(actorId)}/carry`, townJson('POST', body))
+}
+
 
 export function regenerateTownPlayerPortrait(overrides = {}) {
   return jsonRequest(`${BASE}/town/player/portrait`, townJson('POST', overrides))

@@ -21,9 +21,15 @@
       @pointerup="onCanvasUp"
       @pointercancel="onCanvasCancel"
       @pointerleave="onCanvasLeave"
+      @lostpointercapture="onCarryCaptureLost"
       @wheel.prevent="onWheel"
       @dblclick="onDblClick"
     ></canvas>
+    <Transition name="carry-fade">
+      <div v-if="carryState || carryNotice" class="town-carry-hint" role="status" aria-live="polite">
+        {{ carryNotice || (carryState.phase === 'starting' ? '轻轻拎起…' : carryState.phase === 'dropping' ? '正在放下…' : '拖到空地松手放下 · Esc 放回原处') }}
+      </div>
+    </Transition>
 
     <!-- 居民动态浮窗（左上角）：最新一条 NPC 活动记录，0.3s 渐入渐出；点开看全镇流水 -->
     <Transition name="ticker-fade" mode="out-in">
@@ -64,6 +70,7 @@ v-if="latestActivity && initialized" :key="latestActivity.seq" class="town-activ
         <span v-if="weatherText" class="town-chip">{{ weatherIcon }} {{ weatherText }}</span>
         <span v-if="weather?.timeDesc" class="town-chip">{{ weather.timeDesc }}</span>
         <span class="town-chip">{{ agents.length }} 位居民</span>
+        <span v-if="initialized" class="town-chip">长按居民可拎起</span>
         <span v-if="!connected" class="town-chip is-warn">连接中…</span>
       </div>
       <div v-if="initialized" class="town-topbar-actions">
@@ -354,6 +361,8 @@ import { HW, HH, cellTopWorld, cellCenterWorld, worldToCell, objectRect, buildBl
 import { canvasGroundImage } from '../town/renderers/groundTexture.js'
 import { adaptAgent, assetUrl } from '../town/renderers/TownSceneAdapter.js'
 import { mergeActivityWithTrail } from '../town/wanderTrail.js'
+import { createResidentCarry } from '../town/residentCarry.js'
+import { carryGroundPoint, drawResidentCarry } from '../town/residentCarryOverlay.js'
 import LinsheInput from '../components/ui/LinsheInput.vue'
 import LinsheSelect from '../components/ui/LinsheSelect.vue'
 import { TOWN_FOOTPRINT_OPTIONS, parseTownFootprint } from '../utils/townFootprint.js'
@@ -645,10 +654,24 @@ const spotReady = computed(() => !!worldSpot.value && !!worldScope.value.worldId
 const showAdmin = ref(false)
 const showWizard = ref(false)
 const dragging = ref(false)
+const carryState = ref(null)
+const carryNotice = ref('')
+let carryNoticeTimer = null
+let carryTheme = null
+let carryColors = {}
+function refreshCarryColors() {
+  const theme = document.documentElement.getAttribute('data-theme') || 'warm'
+  if (carryTheme === theme) return
+  carryTheme = theme
+  const style = getComputedStyle(document.documentElement)
+  const color = name => style.getPropertyValue(name).trim()
+  carryColors = { accent: color('--accent'), danger: color('--fun-orange'),
+    paper: color('--bg-secondary'), ink: color('--text-primary') }
+}
 
 // 顶栏动作的统一禁用口径：编辑中 / 管理面板 / 开镇向导 / 画布被对话、建筑面板或过场占住。
 // 顶栏按钮不再各写一份 `editing || showAdmin || showWizard || dialogueInputBlocked`。
-const uiLocked = computed(() => editing.value || showAdmin.value || showWizard.value || dialogueInputBlocked.value)
+const uiLocked = computed(() => editing.value || showAdmin.value || showWizard.value || dialogueInputBlocked.value || !!carryState.value)
 const travelTarget = computed(() => town.maps.find(m => m.id === travelTargetId.value) || null)
 const travelReadyCount = computed(() => town.maps.filter(m => m.status === 'ready').length)
 const travelCanDepart = computed(() => !!travelTarget.value && travelTarget.value.status === 'ready'
@@ -667,6 +690,7 @@ let moveTimer = null
 watch(dialogueInputBlocked, blocked => {
   if (!blocked) return
   clearMovementKeys()
+  cancelCarry()
   onCanvasLeave()
 }, { flush: 'sync' })
 watch(() => [town.snapshot?.worldId, town.snapshot?.worldEpoch], () => {
@@ -734,6 +758,7 @@ const canvasClass = computed(() => ({
   'is-editing': editing.value,
   'is-panning': dragging.value,
   'is-traveling': traveling.value,
+  'is-carrying': !!carryState.value,
 }))
 
 const mapDisplayName = computed(() => renderMap.value?.name || mapMeta.value?.name || '邻舍小镇')
@@ -908,10 +933,73 @@ function enterWorldSpot(spot) {
 let downInfo = null
 let suppressClick = false
 
+function carryMessage(text) {
+  clearTimeout(carryNoticeTimer)
+  carryNotice.value = text
+  carryNoticeTimer = setTimeout(() => { carryNotice.value = '' }, 3200)
+}
+function carryProject(pos) {
+  return hdRenderer?.project({ x: pos.x + .5, y: 0, z: pos.y + .5 }) || { x: 0, y: 0 }
+}
+function carryDropCell(point) {
+  const g = carryState.value
+  const p = carryGroundPoint({ ...g, point })
+  const cell = screenToCell(p.x, p.y)
+  if (!inBounds(cell) || blockedCells.has(`${cell.x},${cell.y}`)) return null
+  const occupied = [...agents.value, ...(player.value ? [player.value] : [])].some(a => {
+    if (a.actorId === g?.agent.actorId) return false
+    const pos = agentDisplayPos(a)
+    return Math.round(pos.x) === cell.x && Math.round(pos.y) === cell.y
+  })
+  return occupied ? null : cell
+}
+const residentCarry = createResidentCarry({
+  request: api.carryTownActor,
+  scope: () => ({ ...worldScope.value, mapId: town.currentMapId }),
+  dropCell: carryDropCell,
+  changed: value => { carryState.value = value },
+  started: g => {
+    clearMovementKeys(); followPlayer = false; dragging.value = false
+    suppressClick = true
+    if (downInfo) downInfo.moved = true
+    const feet = carryProject(agentDisplayPos(g.agent))
+    g.gripOffset = { x: feet.x - g.initial.x, y: feet.y - g.initial.y }
+    g.direction = facing[g.agent.agentKey] || 'down'
+    try { canvasEl.value?.setPointerCapture(g.pointerId) } catch { /* pointer already released */ }
+    carryNotice.value = ''; clearTimeout(carryNoticeTimer)
+  },
+  settled: (result, g) => {
+    if (g.scope.mapId !== town.currentMapId || g.scope.worldId !== worldScope.value.worldId
+      || g.scope.worldEpoch !== worldScope.value.worldEpoch) return
+    const a = agents.value.find(a => a.actorId === g.agent.actorId)
+    if (a && result.position) Object.assign(a, result.position, { path: [], moveStartedAt: 0 })
+    if (result.message) carryMessage(result.message)
+    else if (result.returned) carryMessage('已轻轻放回原处')
+  },
+  error: err => { if (!disposed) { carryMessage(err.message || '没有拎稳，请再试一次'); town.fetchState().catch(() => {}) } },
+})
+const carryPoint = e => ({ x: e.offsetX, y: e.offsetY, pointerId: e.pointerId })
+function cancelCarry() {
+  const pointerId = residentCarry.pointerId
+  residentCarry.abort()
+  try { if (canvasEl.value?.hasPointerCapture(pointerId)) canvasEl.value.releasePointerCapture(pointerId) } catch { /* no capture */ }
+}
+function onCarryCaptureLost() {
+  if (['starting', 'held'].includes(residentCarry.phase)) { cancelCarry(); downInfo = null }
+}
+function onTownBlur() { clearMovementKeys(); onCanvasCancel() }
+watch(() => [town.currentMapId, town.snapshot?.worldId, town.snapshot?.worldEpoch, renderMap.value?.version,
+  editing.value, showAdmin.value, showWizard.value, activityPanelOpen.value], () => cancelCarry())
+
 function onCanvasDown(e) {
-  if (dialogueInputBlocked.value) return
+  if (dialogueInputBlocked.value || showAdmin.value || showWizard.value) return
+  if (downInfo && e.pointerId !== downInfo.pointerId) { onCanvasCancel(); return }
+  if (residentCarry.active) return
   suppressClick = false
-  downInfo = { x: e.offsetX, y: e.offsetY, button: e.button, moved: false }
+  downInfo = { x: e.offsetX, y: e.offsetY, button: e.button, moved: false, pointerId: e.pointerId }
+  if (!editing.value && e.button === 0 && initialized.value && hdRenderer) {
+    residentCarry.down(carryPoint(e), hitAgent(e.offsetX, e.offsetY))
+  }
   if (editing.value && e.button === 0) {
     const cell = screenToCell(e.offsetX, e.offsetY)
     if (['ground', 'road'].includes(editTool.value) && selectedAsset.value && inBounds(cell)) {
@@ -923,6 +1011,8 @@ function onCanvasDown(e) {
 
 function onCanvasMove(e) {
   if (dialogueInputBlocked.value) return
+  if (residentCarry.move(carryPoint(e))) return
+  if (downInfo && e.pointerId !== downInfo.pointerId) return
   if (editing.value) {
     ghostCell.value = screenToCell(e.offsetX, e.offsetY)
     if (paintDrag.value) {
@@ -933,7 +1023,7 @@ function onCanvasMove(e) {
       paintCell(paintDrag.value.lastCell)
     }
   }
-  if (downInfo && !downInfo.moved && (Math.abs(e.offsetX - downInfo.x) > 4 || Math.abs(e.offsetY - downInfo.y) > 4)) {
+  if (downInfo && !downInfo.moved && Math.hypot(e.offsetX - downInfo.x, e.offsetY - downInfo.y) > 8) {
     downInfo.moved = true
     if (!editing.value || downInfo.button !== 0) dragging.value = true
   }
@@ -953,6 +1043,11 @@ function onCanvasMove(e) {
 }
 
 function onCanvasUp(e) {
+  if (residentCarry.up(carryPoint(e))) {
+    suppressClick = true; downInfo = null; dragging.value = false
+    return
+  }
+  if (downInfo && e.pointerId !== downInfo.pointerId) return
   suppressClick = !!downInfo?.moved
   if (editing.value && paintDrag.value && downInfo?.moved) {
     fillRect(paintDrag.value.startCell, paintDrag.value.lastCell)
@@ -970,6 +1065,7 @@ function onCanvasUp(e) {
 // pointercancel（手势被系统接管、来电等）：只收尾，不能算成“移动过”，
 // 否则 suppressClick 会留着把下一次正常点击吃掉。
 function onCanvasCancel() {
+  cancelCarry()
   paintDrag.value = null
   dragging.value = false
   downInfo = null
@@ -979,6 +1075,8 @@ function onCanvasCancel() {
 }
 
 function onCanvasLeave() {
+  if (residentCarry.active) return
+  cancelCarry()
   paintDrag.value = null
   dragging.value = false
   downInfo = null
@@ -987,7 +1085,7 @@ function onCanvasLeave() {
 }
 
 function onCanvasClick(e) {
-  if (dialogueInputBlocked.value) return
+  if (dialogueInputBlocked.value || residentCarry.active) return
   if (suppressClick || downInfo?.moved) { suppressClick = false; return }
   if (!loaded.value) return
   if (editing.value) {
@@ -1014,6 +1112,7 @@ function onCanvasClick(e) {
 }
 
 function onCanvasRightClick(e) {
+  if (residentCarry.active) { cancelCarry(); downInfo = null; return }
   if (dialogueInputBlocked.value) return
   if (editing.value && editTool.value === 'block') {
     const cell = screenToCell(e.offsetX, e.offsetY)
@@ -1022,12 +1121,12 @@ function onCanvasRightClick(e) {
 }
 
 function onDblClick() {
-  if (dialogueInputBlocked.value) return
+  if (dialogueInputBlocked.value || residentCarry.active) return
   if (!editing.value) followPlayer = true
 }
 
 function onWheel(e) {
-  if (dialogueInputBlocked.value) return
+  if (dialogueInputBlocked.value || residentCarry.active) return
   const factor = e.deltaY < 0 ? 1.12 : 0.89
   const newZoom = Math.min(2.5, Math.max(0.5, cam.zoom * factor))
   const before = screenToWorld(e.offsetX, e.offsetY)
@@ -1048,6 +1147,9 @@ const KEY_DIRS = {
 }
 
 function onKeyDown(e) {
+  if (e.code === 'Escape' && residentCarry.active) {
+    e.preventDefault(); cancelCarry(); downInfo = null; suppressClick = true; return
+  }
   if (uiLocked.value) return
   if (e.isComposing || document.activeElement?.closest('input, textarea, [contenteditable="true"], [role="combobox"], [role="listbox"]')) return
   if (KEY_DIRS[e.code]) {
@@ -1662,7 +1764,8 @@ function draw(nowMs) {
     cam.x += (center.x - cam.x) * 0.08
     cam.y += (center.y - cam.y) * 0.08
   }
-  const frames = editing.value ? [] : [...agents.value, ...(player.value ? [player.value] : [])].map(a => {
+  const frames = editing.value ? [] : [...agents.value, ...(player.value ? [player.value] : [])]
+    .filter(a => !carryState.value || carryState.value.phase === 'starting' || a.actorId !== carryState.value.agent.actorId).map(a => {
     const pos = agentDisplayPos(a)
     return adaptAgent(a, pos, agentFacing(a, pos), nowMs)
   })
@@ -1693,6 +1796,14 @@ function draw(nowMs) {
     ctx.fillText(hdActive.value ? (loaded.value ? '这片土地还在等待它的故事…' : '正在唤醒这个世界…') : 'HD2D 渲染不可用，请点击重试', cssW / 2, cssH / 2)
   }
   drawWeatherOverlay(ctx, nowMs)
+  if (carryState.value && hdRenderer) {
+    refreshCarryColors()
+    drawResidentCarry(ctx, carryState.value, {
+      zoom: cam.zoom, now: Date.now(), reducedMotion: prefersReducedMotion.value,
+      project: carryProject, getImage: getImg, valid: !!carryDropCell(carryState.value.point),
+      colors: carryColors,
+    })
+  }
   if (!document.hidden) rafId = requestAnimationFrame(draw)
 }
 
@@ -1818,7 +1929,7 @@ async function prepareWorldResources() {
 }
 
 function onVisibility() {
-  if (document.hidden) clearMovementKeys()
+  if (document.hidden) onTownBlur()
   if (!document.hidden && rafId === 0) rafId = requestAnimationFrame(draw)
 }
 
@@ -1859,7 +1970,7 @@ onMounted(async () => {
   document.addEventListener('visibilitychange', onVisibility)
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('keyup', onKeyUp)
-  window.addEventListener('blur', clearMovementKeys)
+  window.addEventListener('blur', onTownBlur)
   rafId = requestAnimationFrame(draw)
   refreshNpcEncounters()
   encounterTimer = window.setInterval(refreshNpcEncounters, 60000)
@@ -1867,6 +1978,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  cancelCarry(); clearTimeout(carryNoticeTimer)
   disposed = true; rendererEpoch++
   clearInterval(refreshActivityTimer)
   // 过场中途离开页面：让挂起的等待立刻收尾（异步流程本来就靠 token 作废）
@@ -1887,7 +1999,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibility)
   window.removeEventListener('keydown', onKeyDown)
   window.removeEventListener('keyup', onKeyUp)
-  window.removeEventListener('blur', clearMovementKeys)
+  window.removeEventListener('blur', onTownBlur)
   if (moveTimer) { clearInterval(moveTimer); moveTimer = null }
   if (encounterTimer) { clearInterval(encounterTimer); encounterTimer = null }
   dialogueRequest++
@@ -2309,6 +2421,17 @@ async function startTravel() {
 }
 
 .town-canvas.is-hoverable { cursor: pointer; }
+.town-canvas.is-carrying { cursor: grabbing; }
+.carry-fade-enter-active, .carry-fade-leave-active { transition: opacity .3s ease; }
+.carry-fade-enter-from, .carry-fade-leave-to { opacity: 0; }
+.town-carry-hint {
+  position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
+  max-width: calc(100% - 32px); padding: 9px 16px; z-index: 5;
+  border: 2px solid var(--town-paper-line); border-radius: var(--radius-lg);
+  background: var(--bg-secondary); color: var(--text-primary);
+  box-shadow: var(--shadow-hard-sm); font-size: var(--fs-sm); text-align: center;
+  pointer-events: none;
+}
 .town-canvas.is-editing { cursor: cell; }
 .town-canvas.is-panning { cursor: grabbing; }
 /* 过场期间画布彻底交出去：不接指针、不给悬停光标（输入闸门在 dialogueInputBlocked） */

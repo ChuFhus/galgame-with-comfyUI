@@ -20,6 +20,7 @@
  */
 import { playerRouteStart, applyPlayerRoute } from './playerMovement.js';
 import { advanceAgentPosition } from './agentMovement.js';
+import { carryTownResident, isTownCarried } from './townCarry.js';
 import { createTownActorRegistry } from './townActorRegistry.js';
 import { reconcileTownResponsibilities } from './townResponsibilityRuntime.js';
 import { townCapabilities, defaultTownCapabilities, parseCharacterCapabilities, readCharacterCapabilities, setCharacterCapabilities } from './townCapabilities.js';
@@ -1425,7 +1426,7 @@ function stopAgentMovement(agent) {
 const CHAT_HOLD_MS = 90_000;
 
 function isChatHeld(agent, now = Date.now()) {
-  return Number.isSafeInteger(agent?.chatHoldUntil) && agent.chatHoldUntil > now;
+  return (Number.isSafeInteger(agent?.chatHoldUntil) && agent.chatHoldUntil > now) || isTownCarried(agent, now);
 }
 
 // ── 居民驱动：NPC 作息 / 入住角色日程投影 ──
@@ -2491,6 +2492,7 @@ function resolveTownActorAgent(actorId) {
 export function holdTownActor(actorId) {
   const agent = resolveTownActorAgent(actorId);
   if (!agent) return { ok: false, error: '这位居民目前不在镇上' };
+  if (isTownCarried(agent)) return { ok: false, error: '请先把这位居民放下来' };
   const now = Date.now();
   advanceAgent(agent, now);
   agent.chatHoldUntil = now + CHAT_HOLD_MS;
@@ -2505,6 +2507,26 @@ export function releaseTownActor(actorId) {
   agent.chatHoldUntil = 0;
   agent.dirty = true;
   return { ok: true };
+}
+
+/** Explicit, token-scoped player interaction; never schedules model calls. */
+export function carryTownActor(actorId, request = {}) {
+  const agent = resolveTownActorAgent(actorId);
+  const now = Date.now();
+  if (request.operation === 'drop') {
+    // Reservations alone do not cover another resident passing through the cell.
+    for (const other of state.agents.values()) advanceAgent(other, now);
+    advancePlayer(now);
+  }
+  const occupied = new Map(state.occupied);
+  for (const other of state.agents.values()) {
+    if (other !== agent && other.presence !== 'off_town') occupied.set(`${other.x},${other.y}`, other.agentKey);
+  }
+  const result = carryTownResident({ agent, map: state.map, occupied, player: state.player,
+    ...request, now, advance: advanceAgent,
+    interrupt: a => state.simulation?.cancelActor(a.actorId, 'PLAYER_CARRY'),
+    stop: stopAgentMovement, persist: persistAgent });
+  return result;
 }
 
 export function movePlayerTo(x, y) {
