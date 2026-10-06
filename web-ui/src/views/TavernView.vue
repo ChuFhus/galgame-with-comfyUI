@@ -2116,7 +2116,7 @@ onMounted(async () => {
 }
 
 .inline-input {
-  background: rgba(255,255,255,0.9);
+  background: var(--bg-secondary);
   border: 1px solid var(--accent);
   border-radius: 8px;
   padding: 4px 10px;
